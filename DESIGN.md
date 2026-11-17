@@ -1,6 +1,4 @@
-# Diffloop — engineering design
-
-Initial design · macOS first · Windows later
+# Diffloop Engineering Design
 
 ## Product
 
@@ -8,41 +6,54 @@ A local desktop app for reviewing other people's GitHub PRs. It answers:
 
 - **What needs my attention?** A personal inbox with clear reasons for each PR.
 - **What should I verify?** Read-only agents that turn focused checks into findings and editable draft comments.
+- **What is important for me to review?** Ability to have agents review PRs first and together with engineer is the loop.
 
-V1 includes diffs, threads, and review submission without a local clone. Users decide what to publish. No Diffloop account or backend; state stays on the machine. GitHub and selected agent providers receive the context needed for their operations.
+V1 includes:
+
+- Diffs, threads, and review submission without a local clone. 
+- Users decide what to publish. 
+- No Diffloop account or backend; state stays on the machine. 
+- Users can connect to GitHub using Personal Access Tokens (PATs)
 
 ## Architecture
 
-**Electron + React + TypeScript/Node.js + SQLite.** Most work is network I/O and UI rendering; no Rust in v1.
+**The core:** Electron + React + TypeScript/Node.js + SQLite
 
 
 | Layer               | Responsibility                                                                     |
 | ------------------- | ---------------------------------------------------------------------------------- |
 | React renderer      | Inbox, virtualized diffs, threads, agent configurations, findings, drafts          |
 | TypeScript core     | GitHub sync, attention rules, context permissions, agent orchestration, publishing |
-| SQLite              | Cached PRs, inbox state, agent configurations, runs, findings, drafts              |
+| SQLite              | Cached PRs, inbox state, agent configurations, review runs, findings, drafts       |
 | Local files         | Revision-specific code caches                                                      |
-| OS credential store | Diffloop-managed tokens; agent runtimes manage their own credentials               |
+| OS credential store | Diffloop-managed tokens; agent runtimes manage their own credentials.              |
 
 
-Use a sandboxed renderer with no Node access and a narrow, validated preload API. Keep business logic independent of Electron and expensive processing off the main thread.
+Key concepts for implementation:
+
+- Use a sandboxed renderer with no Node access and a narrow, validated preload API. 
+- Keep business logic independent of Electron and expensive processing off the main thread.
+- OS credential store needs provides an abstraction for MacOS vs Windows
+- Should try to isolate and abstract OS specific parts as much as possible to make adding new OS easier
 
 ## Release Target
 
-A signed macOS app and Homebrew cask. Keep Windows feasible as a follow up.
+V1 - A signed macOS app and Homebrew cask. Post V1 - add Windows
 
 ## GitHub and inbox
 
-V1 targets individual reviewers on GitHub.com, including accessible organization repositories and team review requests. Discover the connected user’s accessible team memberships to surface those requests. GitHub Enterprise Server is deferred. Scope credentials, identities, and caches by connection.
+V1 targets individual reviewers on GitHub.com, including accessible organization repositories and team review requests. Let user provide GitHub queries to fetch PRs to review, auto-discovery is not needed to start with. GitHub Enterprise Server is deferred.
 
-- **GitHub.com:** OAuth device flow in the system browser, without a backend or embedded secret. Request `repo` and `read:org`; explain their breadth.
-- **Sync:** poll while running, refresh on focus, and allow manual refresh. Handle pagination, rate limits, and partial failures. Cached content works offline.
+- **GitHub.com:** Use PATs and let user provide GitHub queries to get list of PRs they are interested in.
+- **Sync:** poll while running and allow manual refresh. Handle pagination, rate limits, and partial failures. Cached content works offline. Push deliberate, update on manual button click.
 
 GitHub owns published PR/review state. Diffloop owns attention state, snoozes, agent configurations, runs, and drafts.
 
 Show one inbox item per PR with all applicable reasons: direct request, team request, explicit re-request, author reply to your thread, or new commits since you requested changes.
 
 **Attention lifecycle:** opening a PR does not clear attention. Submitting a review clears only reasons included in the submission’s captured attention baseline; **Mark handled** acknowledges current reasons without publishing. New qualifying activity brings the PR back. Preserve activity arriving during review submission rather than clearing it accidentally.
+
+**PR commenting:**
 
 Persist stable source event IDs and per-PR acknowledgement baselines. Repeated polls must not recreate handled requests. Reconcile current request state with request/removal events to distinguish re-requests; an incomplete sync must not clear reasons or advance baselines. On first sync, seed historical activity baselines and surface current outstanding requests rather than treating all past replies as new. Closed or merged PRs leave the active inbox while retaining local drafts and history.
 
@@ -72,13 +83,11 @@ V1 agents can only list, read, and search permitted revision-specific code and r
 
 Context gathering follows the configuration’s instructions or selected skill/plugin. Do not automatically download a repository or explore related files. Instructions may direct the agent to local code or GitHub and request additional files when needed. Local code is optional; a checkout is not required. If the requested source or context is unavailable or ambiguous, surface that rather than silently choosing another source. Instructions guide behavior; configured permissions remain the access ceiling. Record the source and revision of context actually read, including local changes, and make search coverage explicit.
 
-Context access goes through a Diffloop broker, scoped to the GitHub connection, repository, run, permitted context kinds, and explicitly allowed sources. Local roots require an explicit repository mapping; resolve paths and symlinks before access and reject escapes. A runtime's general read-only mode alone does not satisfy this policy. Disable ambient filesystem, network, inherited tools, and extension access that bypass the broker; provider transport and runtime authentication remain available. Treat PR text, code, and extension instructions as untrusted input, never as authority to widen permissions. If an adapter cannot enforce these restrictions, leave it unavailable.
-
 Snapshot local content at read time, recording checkout commit, dirty state, and content hash; never label dirty content as an exact GitHub revision. Record search roots, filters, revision, and truncation as well as returned resources, so an empty result does not imply whole-repository coverage. Permission revocation stops affected runs and prevents further reads. Disconnecting a GitHub connection stops its sync and runs; retain drafts until explicit local deletion, with deletion covering caches and run context too.
 
 ## Drafts and publishing
 
-Persist drafts across restarts. Flag findings and drafts affected by new commits. Before explicit user submission, recheck the PR revision and resolve invalid anchors. Track submission progress and reconcile uncertain network outcomes before retrying, avoiding duplicate reviews.
+Persist drafts across restarts. Flag findings and drafts affected by new commits. Before explicit user submission, recheck the PR revision and resolve invalid anchors. Track submission progress and avoid duplicate reviews.
 
 Submission freezes the included comments, action, body, head SHA, and attention baseline into a durable attempt before the first network mutation. Create and track a remote pending review, then submit it explicitly; handle pre-existing pending reviews without adopting or deleting them silently. Persist remote IDs at each stage. On timeout or restart, reconcile remote state against the frozen attempt before further writes. If reconciliation cannot identify an outcome uniquely, keep the attempt unresolved and require user resolution rather than retrying blindly. Only confirmed submission acknowledges its captured attention reasons. GitHub can change after the final revision check: submit against the reviewed commit and surface any subsequent change, without claiming an atomic check-and-submit guarantee.
 
