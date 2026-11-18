@@ -5,14 +5,15 @@
 A local desktop app for reviewing other people's GitHub PRs. It answers:
 
 - **What needs my attention?** A personal inbox with clear reasons for each PR.
-- **What should I verify?** Read-only agents that turn focused checks into findings and editable draft comments.
+- **What should I verify?** Agents that review code and, when asked, create editable local draft comments.
 - **What is important for me to review?** Ability to have agents review PRs first and together with engineer is the loop.
 
 V1 includes:
 
-- Diffs, threads, and review submission without a local clone. 
-- Users decide what to publish. 
-- No Diffloop account or backend; state stays on the machine. 
+- Offline-first diffs, threads, and local drafts without a local clone.
+- Explicit **Pull** to download review context and **Push** to publish selected local work.
+- Users decide what to publish.
+- No Diffloop account or backend; state stays on the machine.
 - Users can connect to GitHub using Personal Access Tokens (PATs)
 
 ## Architecture
@@ -23,7 +24,7 @@ V1 includes:
 | Layer               | Responsibility                                                                     |
 | ------------------- | ---------------------------------------------------------------------------------- |
 | React renderer      | Inbox, virtualized diffs, threads, agent configurations, findings, drafts          |
-| TypeScript core     | GitHub sync, attention rules, context permissions, agent orchestration, publishing |
+| TypeScript core     | GitHub Pull/Push, attention rules, context permissions, agent orchestration, publishing |
 | SQLite              | Cached PRs, inbox state, agent configurations, review runs, findings, drafts       |
 | Local files         | Revision-specific code caches                                                      |
 | OS credential store | Diffloop-managed tokens; agent runtimes manage their own credentials.              |
@@ -31,7 +32,7 @@ V1 includes:
 
 Key concepts for implementation:
 
-- Use a sandboxed renderer with no Node access and a narrow, validated preload API. 
+- Use a sandboxed renderer with no Node access and a narrow, validated preload API.
 - Keep business logic independent of Electron and expensive processing off the main thread.
 - OS credential store needs provides an abstraction for MacOS vs Windows
 - Should try to isolate and abstract OS specific parts as much as possible to make adding new OS easier
@@ -45,19 +46,19 @@ V1 - A signed macOS app and Homebrew cask. Post V1 - add Windows
 V1 targets individual reviewers on GitHub.com, including accessible organization repositories and team review requests. Let user provide GitHub queries to fetch PRs to review, auto-discovery is not needed to start with. GitHub Enterprise Server is deferred.
 
 - **GitHub.com:** Use PATs and let user provide GitHub queries to get list of PRs they are interested in.
-- **Sync:** poll while running and allow manual refresh. Handle pagination, rate limits, and partial failures. Cached content works offline. Push deliberate, update on manual button click.
+- **Pull:** user-initiated download of PRs matching saved queries and their review context. Handle pagination, rate limits, and partial failures. No periodic, launch, or focus-triggered sync in V1.
+- **Offline:** after Pull, cached PR metadata, diffs, changed-file content, and threads remain available across restarts. Users can review, manage attention, and create/edit drafts without a connection. Show last-pulled time and missing content explicitly; uncached context requires an explicit fetch. Pull preserves all local drafts.
+- **Push:** only an explicit user action publishes selected drafts. Send comments individually, show each result, and allow per-comment retry; one failure does not block the remaining comments. Offline Push leaves drafts local for the user to push later; reconnecting never publishes automatically.
 
 GitHub owns published PR/review state. Diffloop owns attention state, snoozes, agent configurations, runs, and drafts.
 
 Show one inbox item per PR with all applicable reasons: direct request, team request, explicit re-request, author reply to your thread, or new commits since you requested changes.
 
-**Attention lifecycle:** opening a PR does not clear attention. Submitting a review clears only reasons included in the submission’s captured attention baseline; **Mark handled** acknowledges current reasons without publishing. New qualifying activity brings the PR back. Preserve activity arriving during review submission rather than clearing it accidentally.
+**Attention lifecycle:** opening a PR does not clear attention. A confirmed review action clears only reasons included in its captured attention baseline; pushing individual comments does not mark a PR handled; **Mark handled** acknowledges current reasons without publishing. New qualifying activity brings the PR back. Preserve activity arriving during Push rather than clearing it accidentally.
 
-**PR commenting:**
+Persist stable source event IDs and per-PR acknowledgement baselines. Repeated pulls must not recreate handled requests. Reconcile current request state with request/removal events to distinguish re-requests; an incomplete Pull must not clear reasons or advance baselines. On first Pull, seed historical activity baselines and surface current outstanding requests rather than treating all past replies as new. Closed or merged PRs leave the active inbox while retaining local drafts and history.
 
-Persist stable source event IDs and per-PR acknowledgement baselines. Repeated polls must not recreate handled requests. Reconcile current request state with request/removal events to distinguish re-requests; an incomplete sync must not clear reasons or advance baselines. On first sync, seed historical activity baselines and surface current outstanding requests rather than treating all past replies as new. Closed or merged PRs leave the active inbox while retaining local drafts and history.
-
-**Snooze:** hide until new commits, a reply to your thread, or an explicit request. Metadata changes do not wake it.
+**Snooze:** hide until a Pull discovers new commits, a reply to your thread, or an explicit request. Metadata changes do not wake it.
 
 Diffs use GitHub’s PR comparison semantics: record the merge-base SHA used for the displayed diff separately from the target branch tip. Pin fetched content to immutable SHAs, including fork heads; report unavailable revisions and incomplete, binary, or oversized patches explicitly. Never present a partial diff as complete. Offline review is limited to cached content.
 
@@ -79,19 +80,24 @@ An **agent configuration** defines an agent connection/model, allowed context, a
 
 Run a configuration on a PR, diff selection, or thread. Users can cancel runs; v1 adds no Diffloop token or cost budgets and leaves usage limits to the agent tool. Each run snapshots the configuration, resolved skill/plugin identity and version when used, scope, base/head revisions, runtime/model, and supplied context.
 
-V1 agents can only list, read, and search permitted revision-specific code and review context. Disable shell commands, file edits, publishing, and unselected extensions. Selected skills/plugins must obey the same limits; incompatible extensions cannot run. Verify each runtime can enforce this boundary before enabling its adapter. Broader permissions are deferred.
+V1 agents can list, read, and search permitted code and review context. When explicitly asked, they can create local draft comments through a narrow Diffloop tool. They cannot publish, trigger Push, or modify existing user drafts. Disable shell commands, source-file edits, remote writes, and unselected extensions. Selected skills/plugins must obey the same limits; incompatible extensions cannot run. Verify each runtime can enforce this boundary before enabling its adapter. Broader permissions are deferred.
+
+Cloud agent runtimes still require connectivity to their provider; offline manual review and drafting do not. Agents can use cached GitHub context without a new Pull, but uncached GitHub reads require an explicit user fetch and never trigger background synchronization.
 
 Context gathering follows the configuration’s instructions or selected skill/plugin. Do not automatically download a repository or explore related files. Instructions may direct the agent to local code or GitHub and request additional files when needed. Local code is optional; a checkout is not required. If the requested source or context is unavailable or ambiguous, surface that rather than silently choosing another source. Instructions guide behavior; configured permissions remain the access ceiling. Record the source and revision of context actually read, including local changes, and make search coverage explicit.
 
-Snapshot local content at read time, recording checkout commit, dirty state, and content hash; never label dirty content as an exact GitHub revision. Record search roots, filters, revision, and truncation as well as returned resources, so an empty result does not imply whole-repository coverage. Permission revocation stops affected runs and prevents further reads. Disconnecting a GitHub connection stops its sync and runs; retain drafts until explicit local deletion, with deletion covering caches and run context too.
+Snapshot local content at read time, recording checkout commit, dirty state, and content hash; never label dirty content as an exact GitHub revision. Record search roots, filters, revision, and truncation as well as returned resources, so an empty result does not imply whole-repository coverage. Permission revocation stops affected runs and prevents further reads. Disconnecting a GitHub connection stops its remote operations and runs; retain drafts until explicit local deletion, with deletion covering caches and run context too.
 
 ## Drafts and publishing
 
-Persist drafts across restarts. Flag findings and drafts affected by new commits. Before explicit user submission, recheck the PR revision and resolve invalid anchors. Track submission progress and avoid duplicate reviews.
+- **Local first:** persist every draft across restarts, including agent-created comments with run provenance. Users can edit, select, or discard local drafts before Push. Pull never overwrites them.
+- **Independent pushes:** snapshot selected comments when the user clicks Push, then send one comment at a time. Persist each attempt and remote ID. Continue after a failure; show pushed, failed, and uncertain results per comment. Retry only the selected failed comments, never successful ones. Edits made during Push remain local and are not included in that attempt. Once a comment is confirmed published, further changes are handled on GitHub; retain any newer local text for the user to copy there.
+- **Simple conflicts:** before sending, check the remote revision and inline anchor. Flag stale or invalid comments individually; let the user edit, skip, or move the text to a general PR comment. Do not automatically merge drafts or move anchors. Link to GitHub for anything the user prefers to resolve there.
+- **Uncertain outcomes:** after a timeout or crash, check whether that comment was published before retrying. If the outcome remains ambiguous, show it as uncertain with a GitHub link; the user resolves it before another attempt. Other comments can proceed.
+- **Review actions:** approval, request changes, and review-body submission are separate explicit user operations with their own result and retry state. Do not automatically submit a review action after a partially successful comment batch. Only a confirmed review action acknowledges its captured attention baseline.
+- **Threads:** replies use the same per-comment Push flow; resolving/unresolving a thread is a separate explicit user operation. All remote mutations remain unavailable to agents.
 
-Submission freezes the included comments, action, body, head SHA, and attention baseline into a durable attempt before the first network mutation. Create and track a remote pending review, then submit it explicitly; handle pre-existing pending reviews without adopting or deleting them silently. Persist remote IDs at each stage. On timeout or restart, reconcile remote state against the frozen attempt before further writes. If reconciliation cannot identify an outcome uniquely, keep the attempt unresolved and require user resolution rather than retrying blindly. Only confirmed submission acknowledges its captured attention reasons. GitHub can change after the final revision check: submit against the reviewed commit and surface any subsequent change, without claiming an atomic check-and-submit guarantee.
-
-Thread replies and resolving/unresolving threads are separate explicit operations, with durable operation records and the same uncertain-outcome handling. Revalidate inline anchors against the reviewed diff, including side, range, and renamed/deleted files. Let users edit, omit, or convert invalid inline comments into review-body text; never silently move an anchor. Findings and all drafts, including body-only reviews, become subject to recheck when their reviewed revisions change.
+Published comments retain their local record and remote link. Editing or deleting already-published content in Diffloop is deferred; users can do that on GitHub. New commits flag affected findings and drafts for recheck without discarding local text.
 
 ## Core Data Models
 
@@ -99,7 +105,7 @@ Thread replies and resolving/unresolving threads are separate explicit operation
 type ID = string;
 type Timestamp = string;
 
-// A GitHub.com account. Keeps authentication and sync isolated.
+// A GitHub.com account. Keeps authentication and Pull/Push isolated.
 interface Connection {
   id: ID;
   host: "github.com";
@@ -107,7 +113,7 @@ interface Connection {
   login: string;
   credentialRef: string; // OS credential-store reference
   status: "connected" | "reauth_required" | "error";
-  lastSyncedAt?: Timestamp;
+  lastPulledAt?: Timestamp;
 }
 
 // A signed-in agent runtime, separate from GitHub repository access.
@@ -140,10 +146,10 @@ interface PullRequest {
   headSha: string;
   diffBaseSha: string; // Merge base used by the displayed PR diff
   updatedAt: Timestamp; // GitHub timestamp
-  lastSyncedAt: Timestamp;
+  lastPulledAt: Timestamp;
 }
 
-// A durable watermark used by handling, snoozing, and submission snapshots.
+// A durable watermark used by handling, snoozing, and review-action snapshots.
 interface AttentionBaseline {
   headSha: string;
   replyIds: string[];
@@ -183,6 +189,7 @@ interface ReviewAgentConfig {
   model: string;
   review: { kind: "instructions"; text: string }
     | { kind: "skill" | "plugin"; registeredName: string };
+  allowLocalDraftCreation: boolean; // Also requires an explicit user request for the run.
   allowedSources: Array<
     { kind: "github" }
     | { kind: "local"; repositoryId: string; rootId: ID }
@@ -250,8 +257,7 @@ interface Finding {
   anchorStatus: "current" | "needs_recheck";
 }
 
-// A durable review awaiting user submission. Records uncertain outcomes
-// so a network failure does not cause blind retries and duplicate reviews.
+// A local review workspace. Comments are pushed independently of its action.
 interface DraftReview {
   id: ID;
   pullRequestId: ID;
@@ -260,55 +266,72 @@ interface DraftReview {
   reviewedHeadSha: string;
   revisionStatus: "current" | "needs_recheck";
   action: "comment" | "approve" | "request_changes";
-  status: "editing" | "submitting" | "outcome_unknown" | "submitted";
-  submission?: {
-    attemptId: ID;
-    headSha: string;
-    payloadHash: string;
-    frozenPayloadRef: ID; // Immutable body/action/comments, not mutable draft rows
-    attentionBaseline: AttentionBaseline;
-    stage: "creating" | "pending" | "submitting" | "confirmed";
-    // Append-only attempt history is retained separately from this active attempt.
-    startedAt: Timestamp;
-    remoteReviewId?: string;
-  };
+  actionStatus: PushStatus;
+  remoteReviewId?: string;
   updatedAt: Timestamp;
 }
 
-// An editable inline comment, optionally derived from a finding.
-// Selection and anchor validation determine whether it can be published.
+type PushStatus = "local" | "pushing" | "pushed" | "failed" | "outcome_unknown";
+
+// A durable comment, created by the user or an explicitly instructed agent.
 interface DraftComment {
   id: ID;
   draftReviewId: ID;
   findingId?: ID;
+  createdBy: { kind: "user" } | { kind: "agent"; runId: ID };
   body: string;
-  anchor: CodeAnchor;
-  anchorStatus: "valid" | "needs_recheck" | "invalid";
+  target: { kind: "inline"; anchor: CodeAnchor }
+    | { kind: "pr" }
+    | { kind: "reply"; remoteCommentId: string };
+  anchorStatus: "valid" | "needs_recheck" | "invalid" | "not_applicable";
   included: boolean;
+  pushStatus: PushStatus;
   remoteCommentId?: string;
+  remoteUrl?: string;
+  lastError?: string;
   updatedAt: Timestamp;
 }
+
+// One immutable attempt per comment or separate review/thread action.
+interface PushAttempt {
+  id: ID;
+  target: { kind: "comment"; draftCommentId: ID }
+    | { kind: "review_action"; draftReviewId: ID }
+    | { kind: "thread_state"; pullRequestId: ID; remoteThreadId: string };
+  frozenPayloadRef: ID;
+  payloadHash: string;
+  headSha: string;
+  attentionBaseline?: AttentionBaseline; // Review actions only
+  status: "pushing" | "pushed" | "failed" | "outcome_unknown";
+  startedAt: Timestamp;
+  finishedAt?: Timestamp;
+  remoteId?: string;
+  error?: string;
+}
+
 ```
 
-The interfaces above describe domain records, not the full database schema. Persist acknowledgement baselines, local root grants, immutable submission payloads/attempt history, and thread operation records separately. Use connection-scoped uniqueness for remote objects and event keys, foreign keys, migrations, and transactions for attention changes and submission state. Record per-resource sync completeness/errors; a successful partial fetch is not a complete PR snapshot.
+The interfaces above describe domain records, not the full database schema. Persist acknowledgement baselines, local root grants, immutable per-item Push payloads/attempt history, and thread operation records separately. Use connection-scoped uniqueness for remote objects and event keys, foreign keys, migrations, and transactions for attention changes and Push state. Record per-resource Pull completeness/errors; a successful partial fetch is not a complete PR snapshot.
 
 ## Implementation tasks
 
-1. Validate GitHub API flows and each runtime’s authentication, extension support, and permission enforcement before enabling adapters.
+1. Validate PAT access, GitHub comment/review APIs, and runtime authentication, extensions, and permission enforcement.
 2. Bootstrap Electron/React, validated preload APIs, SQLite migrations, and credential storage.
-3. Add GitHub authentication, team discovery, resilient sync, and revision-specific caching with offline reads.
-4. Build virtualized diffs, selections, threads, and comment anchors; handle large and incomplete patches.
-5. Implement inbox reasons, activity baselines, Mark handled, and snooze wake-ups.
-6. Add durable drafts, revision checks, explicit review/thread publishing, and recovery without duplicate submissions.
-7. Build agent connections, repository grants, local mappings, and a restricted context broker.
-8. Add agent configurations, scoped runs, cancellation, findings, draft conversion, and history.
-9. Test attention transitions, account isolation, agent restrictions, stale revisions, and crash/network recovery.
+3. Add PAT connections, saved PR queries, explicit Pull, and persistent offline review caches.
+4. Build virtualized diffs, selections, threads, and comment anchors; show missing or incomplete context.
+5. Implement inbox reasons, activity baselines, Mark handled, and Pull-driven snooze wake-ups.
+6. Add local drafts, per-comment Push/retry, simple conflict handling, and separate review/thread actions.
+7. Build agent connections, repository grants, local mappings, and restricted context and local-draft tools.
+8. Add agent configurations, scoped runs, cancellation, findings, agent-created drafts, and history.
+9. Test offline/restart workflows, Pull preservation, partial Push failures, uncertain retries, and agent publishing restrictions.
 10. Sign, notarize, and verify macOS releases; publish a Homebrew cask. Assess Windows separately.
 
 ## Contract references
 
-Use these as starting points for task 1; supported versions and observed capabilities belong in its validation record:
+Validate API behavior and runtime capabilities in task 1:
 
-- [GitHub OAuth device flow](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow)
-- [GitHub pull request reviews](https://docs.github.com/en/rest/pulls/reviews) — pending reviews, commit targeting, and submission.
+- [GitHub PAT authentication](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
+- [GitHub PR review comments](https://docs.github.com/en/rest/pulls/comments) — individual inline comments and replies.
+- [GitHub issue comments](https://docs.github.com/en/rest/issues/comments) — general PR comments.
+- [GitHub pull request reviews](https://docs.github.com/en/rest/pulls/reviews) — separate review actions.
 - [GitHub review threads](https://docs.github.com/en/graphql/reference/objects#pullrequestreviewthread) — thread identity and resolution state.
