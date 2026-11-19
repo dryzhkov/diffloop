@@ -46,7 +46,7 @@ V1 - A signed macOS app and Homebrew cask. Post V1 - add Windows
 V1 targets individual reviewers on GitHub.com, including accessible organization repositories and team review requests. Let user provide GitHub queries to fetch PRs to review, auto-discovery is not needed to start with. GitHub Enterprise Server is deferred.
 
 - **GitHub.com:** Use PATs and let user provide GitHub queries to get list of PRs they are interested in.
-- **Pull:** user-initiated download of PRs matching saved queries and their review context. Handle pagination, rate limits, and partial failures. No periodic, launch, or focus-triggered sync in V1.
+- **Pull:** user-initiated discovery of PRs through saved queries. After discovery, track each PR by its connection-scoped GitHub ID. On every Pull, refresh tracked open PRs and their review context even if the query changes, is deleted, or stops matching. Handle pagination, rate limits, and partial failures. No periodic, launch, or focus-triggered sync in V1.
 - **Offline:** after Pull, cached PR metadata, diffs, changed-file content, and threads remain available across restarts. Users can review, manage attention, and create/edit drafts without a connection. Show last-pulled time and missing content explicitly; uncached context requires an explicit fetch. Pull preserves all local drafts.
 - **Push:** only an explicit user action publishes selected drafts. Send comments individually, show each result, and allow per-comment retry; one failure does not block the remaining comments. Offline Push leaves drafts local for the user to push later; reconnecting never publishes automatically.
 
@@ -74,7 +74,7 @@ Start with subscription authentication through supported runtimes. Assume the to
 | GitHub Copilot | Copilot SDK/CLI                | GitHub             |
 
 
-Use supported sign-in flows; keep GitHub access separate from agent entitlement. Allow agent connections per GitHub connection, with stricter repository overrides; never switch automatically on failure or usage limits.
+Use supported sign-in flows; keep GitHub access separate from agent entitlement. Allow agent connections per GitHub connection, with stricter repository overrides; keep the chosen runtime fixed for the session, including on failure or usage limits.
 
 An **agent configuration** defines an agent connection/model, allowed context, and how to review: either direct instructions or a reference to a registered skill or plugin (for example, “Use the concurrency-review skill”). References resolve through the selected agent tool's registry. Diffloop checks availability before running and reports missing references; it does not maintain a registry, install extensions, or silently substitute instructions. It enforces context and tool permissions regardless of the instructions or referenced extension.
 
@@ -94,7 +94,7 @@ Snapshot local content at read time, recording checkout commit, dirty state, and
 - **Independent pushes:** snapshot selected comments when the user clicks Push, then send one comment at a time. Persist each attempt and remote ID. Continue after a failure; show pushed, failed, and uncertain results per comment. Retry only the selected failed comments, never successful ones. Edits made during Push remain local and are not included in that attempt. Once a comment is confirmed published, further changes are handled on GitHub; retain any newer local text for the user to copy there.
 - **Simple conflicts:** before sending, check the remote revision and inline anchor. Flag stale or invalid comments individually; let the user edit, skip, or move the text to a general PR comment. Do not automatically merge drafts or move anchors. Link to GitHub for anything the user prefers to resolve there.
 - **Uncertain outcomes:** after a timeout or crash, check whether that comment was published before retrying. If the outcome remains ambiguous, show it as uncertain with a GitHub link; the user resolves it before another attempt. Other comments can proceed.
-- **Review actions:** approval, request changes, and review-body submission are separate explicit user operations with their own result and retry state. Do not automatically submit a review action after a partially successful comment batch. Only a confirmed review action acknowledges its captured attention baseline.
+- **Review actions:** approval, request changes, and review-body submission are separate explicit user operations with their own result and retry state. Do not automatically submit a review action after a partially successful comment batch. Approve the pulled head SHA the user reviewed. At Push, notify the user if the remote head has advanced and identify which SHA the approval covers. Bind the submission to the reviewed SHA even if the head changes during submission. Only a confirmed review action acknowledges its captured attention baseline.
 - **Threads:** replies use the same per-comment Push flow; resolving/unresolving a thread is a separate explicit user operation. All remote mutations remain unavailable to agents.
 
 Published comments retain their local record and remote link. Editing or deleting already-published content in Diffloop is deferred; users can do that on GitHub. New commits flag affected findings and drafts for recheck without discarding local text.
