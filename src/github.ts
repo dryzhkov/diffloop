@@ -134,7 +134,7 @@ export async function fetchThreads(github: GitHub, id: string): Promise<Threads[
   const threads = [];
   const list = await github.graphPages(`query($id:ID!, $cursor:String) {
     node(id:$id) { ... on PullRequest { reviewThreads(first:100, after:$cursor) {
-      ${pageFields} nodes { id path line isResolved isOutdated }
+      ${pageFields} nodes { id path line diffSide isResolved isOutdated }
     } } }
   }`, { id }, data => data.node?.reviewThreads);
   for (const thread of list) {

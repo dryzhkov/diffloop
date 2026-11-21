@@ -55,7 +55,7 @@ export interface Comment {
 export interface Threads {
   comments: Comment[];
   reviews: Array<Comment & { state: string }>;
-  threads: Array<{ id: string; path: string; line: number | null; isResolved: boolean;
+  threads: Array<{ id: string; path: string; line: number | null; diffSide?: 'LEFT' | 'RIGHT'; isResolved: boolean;
     isOutdated: boolean; comments: Array<Comment & { replyTo: { id: string } | null }> }>;
 }
 

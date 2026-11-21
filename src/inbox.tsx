@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Comment, DeviceCode, PullResult, Resource, Review, SavedQuery, WorkspaceApi, WorkspaceStatus } from './api';
 import './inbox.css';
+import { DiffView } from './diff-view';
 
 declare global { interface Window { workspace: WorkspaceApi } }
 const api = window.workspace;
@@ -59,6 +60,8 @@ function Discussion({ comment }: { comment: Comment }) {
 
 function ReviewPane({ id, review }: { id: string; review: Review }) {
   const { metadata, diff, files, comments, reviews, threads } = review;
+  const [path, choosePath] = useState('');
+  const file = diff.data?.files.find(item => item.path === path) ?? diff.data?.files[0];
   return <section className="review">
     <h2>{metadata.data?.title ?? 'Pull request'}</h2>
     <CacheStatus resource={metadata} />
@@ -72,18 +75,22 @@ function ReviewPane({ id, review }: { id: string; review: Review }) {
     {diff.data && <>
       <p className="revision">Target {diff.data.baseSha}<br />Diff base {diff.data.diffBaseSha ?? 'unavailable'}<br />Head {diff.data.headSha}</p>
       {diff.data.files.length === 0 && <p>No cached file changes.</p>}
-      {diff.data.files.map(file => <details key={file.path}>
-        <summary>{file.path} · {file.status}</summary>
+      {file && <div>
+        <label>Changed file <select value={file.path} onChange={event => choosePath(event.target.value)}>
+          {diff.data.files.map(item => <option key={item.path} value={item.path}>{item.path} · {item.status}</option>)}
+        </select></label>
         {file.previousPath && <p>Previous path {file.previousPath}</p>}
-        {file.patch === null ? <p>{file.patchError}</p> : <pre>{file.patch}</pre>}
+        <DiffView key={JSON.stringify([file.path, diff.data.diffBaseSha, diff.data.headSha, diff.cachedAt])}
+          file={file} diff={diff.data} threads={threads.revision === diff.revision ? threads.data ?? [] : []} />
         {([['base', file.previousPath ?? file.path], ['head', file.path]] as const).map(([side, path]) => {
           const cached = files.data?.find(item => item.side === side && item.path === path);
-          if (!cached || files.revision !== diff.revision) return null;
+          if ((side === 'base' && file.status === 'added') || (side === 'head' && file.status === 'removed')) return null;
+          if (!cached || files.revision !== diff.revision) return <p key={side}>{side} content unavailable for this revision.</p>;
           return cached.blob ?
             <CachedFile key={side + cached.blob} id={id} side={side} path={path} blob={cached.blob} /> :
             <p key={side}>{side} content unavailable · {cached.error}</p>;
         })}
-      </details>)}
+      </div>}
     </>}
     <h3>Discussion</h3>
     <h4>General comments</h4>
@@ -98,7 +105,7 @@ function ReviewPane({ id, review }: { id: string; review: Review }) {
     <CacheStatus resource={threads} revision={metadata.revision} />
     {threads.data && <>
       {threads.data.length === 0 && <p>No cached inline threads.</p>}
-      {threads.data.map(thread => <details key={thread.id}>
+      {threads.data.map(thread => <details key={thread.id} id={'thread-' + thread.id}>
         <summary>{thread.path}{thread.line && `:${thread.line}`} · {thread.isResolved ? 'Resolved' : 'Unresolved'}
           {thread.isOutdated && ' · Outdated'}</summary>
         {thread.comments.map(comment => <Discussion key={comment.id} comment={comment} />)}
