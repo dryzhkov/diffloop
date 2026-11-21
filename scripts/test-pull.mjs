@@ -211,6 +211,14 @@ try {
   assert.match(service.review(incomplete.id).diff.data.files[0].patchError, /Incomplete/);
 
   mode = 'slow';
+  const interrupted = service.pull(account);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(service.pullProgress(account));
+  service.cancelPull(account);
+  assert.match((await interrupted).errors.join(), /Pull cancelled/);
+  assert.equal(service.pullProgress(account), null);
+  assert.notEqual((await service.status()).connections.find(value => value.id === account).status, 'disconnected');
+
   const pending = service.pull(account);
   await assert.rejects(service.pull(account), /already running/);
   await new Promise(resolve => setImmediate(resolve));

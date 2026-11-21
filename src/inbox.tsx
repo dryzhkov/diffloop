@@ -9,8 +9,8 @@ const api = window.workspace;
 const date = (value: string) => new Date(value).toLocaleString();
 const message = (error: unknown) => error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': Error: /, '') : 'Workspace request failed';
 
-function QueryEditor({ saved, disabled, onSave, onDelete }: {
-  saved?: SavedQuery; disabled: boolean; onSave: (query: string) => Promise<boolean>; onDelete?: () => void;
+function QueryEditor({ saved, disabled, deleteDisabled = disabled, onSave, onDelete }: {
+  saved?: SavedQuery; disabled: boolean; deleteDisabled?: boolean; onSave: (query: string) => Promise<boolean>; onDelete?: () => void;
 }) {
   const [query, setQuery] = useState(saved?.query ?? '');
   return <form onSubmit={async event => {
@@ -20,7 +20,7 @@ function QueryEditor({ saved, disabled, onSave, onDelete }: {
     <input aria-label={saved ? 'Saved GitHub query' : 'New GitHub query'} value={query} maxLength={256} required
       placeholder="is:open review-requested:@me" onChange={event => setQuery(event.target.value)} />
     <button disabled={disabled || !query.trim() || query === saved?.query}>{saved ? 'Save' : 'Add query'}</button>
-    {onDelete && <button type="button" disabled={disabled} onClick={onDelete}>Delete</button>}
+    {onDelete && <button type="button" disabled={deleteDisabled} onClick={onDelete}>Delete</button>}
   </form>;
 }
 
@@ -128,11 +128,24 @@ function Inbox() {
   const [error, setError] = useState('');
   const [result, setResult] = useState<PullResult>();
   const connection = status?.connections.find(item => item.id === account) ?? status?.connections[0];
+  const [progress, setProgress] = useState('');
+  const pullingId = busy === 'Pulling from GitHub…' ? connection?.id : undefined;
+  useEffect(() => {
+    if (!pullingId) return;
+    let active = true;
+    const update = () => api.pullProgress(pullingId).then(value => {
+      if (active) setProgress(value ?? '');
+    }).catch(() => {});
+    void update();
+    const timer = setInterval(update, 750);
+    return () => { active = false; clearInterval(timer); };
+  }, [pullingId]);
   const canPull = !!connection && !busy && !['disconnected', 'reauth_required'].includes(connection.status) &&
     status?.credentialStorageAvailable;
   const pull = (prId?: string) => {
     if (!connection) return;
     setResult(undefined);
+    setProgress('');
     void run('Pulling from GitHub…', async () => setResult(await api.pull(connection.id, prId)));
   };
   useEffect(() => { api.status().then(setStatus).catch(failure => setError(message(failure))); }, []);
@@ -205,7 +218,7 @@ function Inbox() {
       </form>
     </details>
     {error && <p role="alert">{error}</p>}
-    {busy && <p role="status">{busy}</p>}
+    {busy && !pullingId && <p role="status">{busy}</p>}
     {connection && <section>
       <div className="toolbar">
         <label>GitHub account <select value={connection.id} onChange={event => {
@@ -216,6 +229,7 @@ function Inbox() {
           {status?.connections.map(item => <option key={item.id} value={item.id}>{item.login}</option>)}
         </select></label>
         <button disabled={!canPull} onClick={() => pull()}>Pull</button>
+        {pullingId && <button onClick={() => api.cancelPull(pullingId).catch(failure => setError(message(failure)))}>Cancel Pull</button>}
         {connection.status !== 'disconnected' && <button disabled={!!busy && busy !== 'Pulling from GitHub…'} onClick={async () => {
           try {
             await api.disconnect(connection.id);
@@ -225,6 +239,10 @@ function Inbox() {
           }
         }}>Disconnect</button>}
       </div>
+      {pullingId && <div className="pull-activity" role="status">
+        <progress aria-label="Pull in progress" />
+        <span>{progress || 'Preparing Pull…'}</span>
+      </div>}
       <p className="status">
         {connection.lastPulledAt ? `Last Pull attempt ${date(connection.lastPulledAt)}` : 'No Pull yet'}
         {connection.status === 'reauth_required' && ' · Connect again to update your token'}
@@ -238,9 +256,14 @@ function Inbox() {
       <details open={!status?.queries.some(query => query.connectionId === connection.id) || undefined}>
         <summary>Saved queries</summary>
         {status?.queries.filter(query => query.connectionId === connection.id).map(query =>
-          <QueryEditor key={query.id} saved={query} disabled={!!busy}
+          <QueryEditor key={query.id} saved={query} disabled={!!busy} deleteDisabled={!!busy && !pullingId}
             onSave={value => run('Saving query…', () => api.saveQuery(connection.id, value, query.id))}
-            onDelete={() => void run('Deleting query…', () => api.deleteQuery(query.id))} />)}
+            onDelete={async () => {
+              try {
+                await api.deleteQuery(query.id);
+                setStatus(current => current && { ...current, queries: current.queries.filter(item => item.id !== query.id) });
+              } catch (failure) { setError(message(failure)); }
+            }} />)}
         <QueryEditor key={connection.id} disabled={!!busy}
           onSave={value => run('Saving query…', () => api.saveQuery(connection.id, value))} />
       </details>

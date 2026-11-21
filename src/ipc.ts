@@ -48,6 +48,8 @@ export function registerWorkspace(page: string, service: ReturnType<typeof works
   handle('saveQuery', [2, 3], (connection, expression, existing) =>
     service.saveQuery(id(connection), query(expression).trim(), existing === undefined ? undefined : id(existing)));
   handle('deleteQuery', [1], value => service.deleteQuery(id(value)));
+  handle('cancelPull', [1], value => service.cancelPull(id(value)));
+  handle('pullProgress', [1], value => service.pullProgress(id(value)));
   handle('pull', [1, 2], (value, pr) => service.pull(id(value), pr === undefined ? undefined : id(pr)));
   handle('review', [1], value => service.review(id(value)));
   handle('readFile', [4], (value, file, version, blob) => service.readFile(id(value), path(file), side(version), sha(blob)));

@@ -8,6 +8,7 @@ export class GitHubError extends Error {
 
 export class GitHub {
   private stop?: GitHubError;
+  get stopped() { return this.stop !== undefined; }
   get authenticationFailed() { return this.stop?.status === 401; }
 
   constructor(private readonly token: string, private readonly request = fetch, private readonly cancellation?: AbortSignal) {}
@@ -29,7 +30,8 @@ export class GitHub {
       });
     } catch {
       if (this.cancellation?.aborted) throw new Error('Pull cancelled');
-      throw new Error('GitHub could not be reached or the request timed out');
+      this.stop = new GitHubError('GitHub could not be reached or the request timed out', 0);
+      throw this.stop;
     }
     if (!response.ok) {
       const retry = response.headers.get('retry-after');

@@ -37,7 +37,7 @@ const updateResource = `
 `;
 
 export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, request = fetch) {
-  const pulling = new Map<string, AbortController>();
+  const pulling = new Map<string, { controller: AbortController; progress: string }>();
 
   function transaction(action: () => void) {
     db.exec('BEGIN IMMEDIATE');
@@ -82,7 +82,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
     return join(cacheRoot, connectionId);
   }
 
-  async function refresh(github: GitHub, connectionId: string, target: Target, read: ReturnType<typeof fileReader>) {
+  async function refresh(github: GitHub, connectionId: string, target: Target, read: ReturnType<typeof fileReader>, progress: (stage: string) => void, signal: AbortSignal) {
     const problems: string[] = [];
     const locate = (repository: string) => `/repos/${repository}/pulls/${target.number}`;
     let pr = locate(target.repository);
@@ -101,6 +101,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
       try {
         remote = await getPR();
       } catch (error) {
+        signal.throwIfAborted();
         if (!(error instanceof GitHubError) || ![301, 302, 404].includes(error.status)) throw error;
         const { data } = await github.get<{ data?: { node?: { number: number; repository: { nameWithOwner: string } } } }>(
           '/graphql', { query: 'query($id:ID!) { node(id:$id) { ... on PullRequest { number repository { nameWithOwner } } } }',
@@ -112,6 +113,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
         remote = await getPR();
       }
     } catch (error) {
+      signal.throwIfAborted();
       failure(target.id, 'metadata', message(error));
       throw error;
     }
@@ -153,7 +155,9 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
           await rm(temporary, { force: true });
         }
       };
-      for (const file of diff.data.files) {
+      for (const [index, file] of diff.data.files.entries()) {
+        signal.throwIfAborted();
+        progress(`File ${index + 1} of ${diff.data.files.length}`);
         if (file.status !== 'added' && file.status !== 'copied' || file.previousPath) {
           const path = file.previousPath ?? file.path;
           files.push(diff.data.diffBaseSha ? await read(repository, 'base', diff.data.diffBaseSha, path, hasBlob, saveBlob) :
@@ -164,6 +168,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
             { path: file.path, side: 'head', sha: metadata.headSha, error: 'Head repository unavailable' });
         }
       }
+      signal.throwIfAborted();
       const fileErrors = files.filter(file => file.error).length;
       const contentsError = [fileErrors ? `${fileErrors} file versions unavailable` : null,
         !diff.inventoryComplete ? 'Changed-file list incomplete' : null].filter(Boolean).join('. ') || null;
@@ -185,6 +190,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
       if (diff.error) problems.push(`Diff: ${diff.error}`);
       if (contentsError) problems.push(`Contents: ${contentsError}`);
     } catch (error) {
+      signal.throwIfAborted();
       failure(target.id, 'diff', message(error));
       failure(target.id, 'files', 'Diff could not be refreshed');
       problems.push(`Diff: ${message(error)}`);
@@ -197,9 +203,12 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
     ] as const;
     const downloaded: Array<{ kind: typeof discussion[number][0]; data: unknown }> = [];
     for (const [kind, download] of discussion) {
+      signal.throwIfAborted();
+      progress(kind);
       try {
         downloaded.push({ kind, data: await download() });
       } catch (error) {
+        signal.throwIfAborted();
         failure(target.id, kind, message(error));
         problems.push(`${kind}: ${message(error)}`);
       }
@@ -214,6 +223,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
           for (const { kind, data } of downloaded) save(target.id, kind, data, revision);
         });
       } catch (error) {
+        signal.throwIfAborted();
         for (const { kind } of downloaded) failure(target.id, kind, message(error));
         problems.push(`Discussion: ${message(error)}`);
       }
@@ -256,7 +266,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
         vault.forget(connection.credential_ref);
         db.prepare("UPDATE connections SET status = 'disconnected' WHERE id = ?").run(id);
       });
-      pulling.get(id)?.abort();
+      pulling.get(id)?.controller.abort();
     },
 
     saveQuery(connectionId: string, query: string, id?: string) {
@@ -274,6 +284,9 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
       db.prepare('DELETE FROM saved_queries WHERE id = ?').run(id);
     },
 
+    pullProgress(id: string) { return pulling.get(id)?.progress ?? null; },
+    cancelPull(id: string) { pulling.get(id)?.controller.abort(); },
+
     async pull(id: string, prId?: string): Promise<PullResult> {
       const connection = account(id);
       if (pulling.has(id)) throw new Error('Pull is already running for this connection');
@@ -281,7 +294,8 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
       const selected = prId ? db.prepare('SELECT * FROM pull_requests WHERE connection_id = ? AND id = ?').get(id, prId) as unknown as Target | undefined : undefined;
       if (prId && !selected) throw new Error('Pull request not found for this connection');
       const cancellation = new AbortController();
-      pulling.set(id, cancellation);
+      const activity = { controller: cancellation, progress: 'Reading account credentials…' };
+      pulling.set(id, activity);
       const errors: string[] = [];
       let refreshed = 0;
       let status: Connection['status'] = 'connected';
@@ -298,6 +312,8 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
           targets.set(target.remote_id, target);
         }
         for (const { query } of selected ? [] : queries(id)) {
+          if (cancellation.signal.aborted || github.stopped) break;
+          activity.progress = `Searching saved queries · ${targets.size} PRs queued`;
           try {
             let expected = 0;
             let incomplete = false;
@@ -326,6 +342,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
                 repository = excluded.repository, number = excluded.number RETURNING *`)
                 .get(randomUUID(), id, item.node_id, repository, item.number) as unknown as Target;
               targets.set(target.remote_id, target);
+              activity.progress = `Searching saved queries · ${targets.size} PRs queued`;
             }
             if (incomplete || seen.size !== expected) {
               throw new Error(`Discovery incomplete (${seen.size} of ${expected}; GitHub search returns at most 1,000 results per query)`);
@@ -335,11 +352,16 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
             errors.push(`Query “${query}”: ${message(error)}`);
           }
         }
+        let position = 0;
         for (const target of targets.values()) {
-          if (cancellation.signal.aborted) break;
+          if (cancellation.signal.aborted || github.stopped) break;
+          position++;
           const label = `${target.repository} #${target.number}`;
           try {
-            const problems = await refresh(github, id, target, read);
+            const progress = (stage: string) => { activity.progress = `PR ${position} of ${targets.size} · ${label} · ${stage}`; };
+            progress('Fetching metadata and diff');
+            const problems = await refresh(github, id, target, read, progress, cancellation.signal);
+            cancellation.signal.throwIfAborted();
             refreshed++;
             errors.push(...problems.map(problem => `${label} · ${problem}`));
           } catch (error) {
@@ -354,10 +376,12 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
       } finally {
         if (status === 'connected' && errors.length) status = 'error';
         pulling.delete(id);
-        db.prepare('UPDATE connections SET status = ?, last_pulled_at = ? WHERE id = ?')
-          .run(cancellation.signal.aborted ? 'disconnected' : status, new Date().toISOString(), id);
+        if (!cancellation.signal.aborted) {
+          db.prepare('UPDATE connections SET status = ?, last_pulled_at = ? WHERE id = ?')
+            .run(status, new Date().toISOString(), id);
+        }
       }
-      return { refreshed, errors };
+      return cancellation.signal.aborted ? { refreshed, errors: ['Pull cancelled.', ...errors] } : { refreshed, errors };
     },
 
     review(id: string): Review {

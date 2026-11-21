@@ -99,6 +99,8 @@ export interface WorkspaceApi {
   disconnect(id: string): Promise<void>;
   saveQuery(connectionId: string, query: string, id?: string): Promise<void>;
   deleteQuery(id: string): Promise<void>;
+  cancelPull(id: string): Promise<void>;
+  pullProgress(id: string): Promise<string | null>;
   pull(connectionId: string, prId?: string): Promise<PullResult>;
   review(id: string): Promise<Review>;
   readFile(id: string, path: string, side: 'base' | 'head', blob: string): Promise<string>;
