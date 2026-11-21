@@ -1,9 +1,13 @@
-import { app, BrowserWindow, ipcMain, session } from 'electron';
+import { app, BrowserWindow, session } from 'electron';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { openStore } from './store';
-import { credentials } from './credentials';
-import type { WorkspaceStatus } from './api';
+import { configureCredentialStorage, credentials } from './credentials';
+import { registerWorkspace } from './ipc';
+import { githubOAuth } from './oauth';
+import { workspace } from './workspace';
+
+configureCredentialStorage();
 
 const page = pathToFileURL(join(__dirname, 'index.html')).href;
 function openWindow() {
@@ -24,15 +28,10 @@ app.whenReady().then(async () => {
   const vault = credentials(db);
   app.once('will-quit', () => db.close());
   session.defaultSession.setPermissionRequestHandler((_web, _permission, callback) => callback(false));
-  ipcMain.handle('workspace:status', (event, ...args): WorkspaceStatus => {
-    if (args.length || event.senderFrame !== event.sender.mainFrame || event.senderFrame.url !== page) {
-      throw new Error('Invalid workspace request');
-    }
-    return {
-      accounts: Number(db.prepare('SELECT count(*) AS total FROM connections').get()?.total),
-      credentialStorageAvailable: vault.available(),
-    };
-  });
+  const service = workspace(db, vault, join(app.getPath('userData'), 'code-cache'));
+  const oauth = githubOAuth(process.env.DIFFLOOP_GITHUB_OAUTH_CLIENT_ID, service.connect);
+  registerWorkspace(page, service, oauth);
+  app.on('window-all-closed', oauth.cancel);
   await openWindow();
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) void openWindow();
