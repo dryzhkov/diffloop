@@ -1,3 +1,5 @@
+import { reconcile, observeRequests, type RequestTargets } from './attention';
+import { publishing } from './publishing';
 import { randomUUID } from 'node:crypto';
 import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -22,7 +24,7 @@ interface SearchPage {
   incomplete_results: boolean;
   items: Array<{ id: number; node_id: string; number: number; repository_url: string; pull_request?: object }>;
 }
-interface RemotePR {
+interface RemotePR extends RequestTargets {
   node_id: string; number: number; state: string; merged: boolean; draft: boolean;
   title: string; body: string | null; user: { login: string } | null; html_url: string; updated_at: string;
   base: { sha: string; repo: { id: number; full_name: string } };
@@ -82,7 +84,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
     return join(cacheRoot, connectionId);
   }
 
-  async function refresh(github: GitHub, connectionId: string, target: Target, read: ReturnType<typeof fileReader>, progress: (stage: string) => void, signal: AbortSignal) {
+  async function refresh(github: GitHub, connectionId: string, target: Target, read: ReturnType<typeof fileReader>, progress: (stage: string) => void, signal: AbortSignal, discoveryComplete: boolean) {
     const problems: string[] = [];
     const locate = (repository: string) => `/repos/${repository}/pulls/${target.number}`;
     let pr = locate(target.repository);
@@ -215,12 +217,21 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
     }
     if (downloaded.length) {
       try {
+        const login = String(db.prepare('SELECT login FROM connections WHERE id=?').get(connectionId)?.login).toLowerCase();
+        let requests: Awaited<ReturnType<typeof observeRequests>> | undefined;
+        if (discoveryComplete && !problems.length && metadata.state === 'open') {
+          try { requests = await observeRequests(github, root + '/issues/' + target.number, remote, login); }
+          catch (error) { problems.push('Attention: ' + message(error)); }
+        }
         const latest = await getPR();
         if (latest.updated_at !== remote.updated_at || latest.head.sha !== metadata.headSha || latest.base.sha !== metadata.baseSha) {
           throw new Error('PR changed while downloading discussion. Pull again to refresh it.');
         }
         transaction(() => {
           for (const { kind, data } of downloaded) save(target.id, kind, data, revision);
+          if (requests && !signal.aborted) reconcile(db, target.id, metadata.headSha, requests,
+            resource<NonNullable<Review['threads']['data']>>(target.id, 'threads').data!,
+            resource<NonNullable<Review['reviews']['data']>>(target.id, 'reviews').data!, login, metadata.author);
         });
       } catch (error) {
         signal.throwIfAborted();
@@ -231,7 +242,20 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
     return problems;
   }
 
+  function review(id: string): Review {
+      if (!db.prepare('SELECT 1 FROM pull_requests WHERE id = ?').get(id)) throw new Error('Pull request not found');
+      return { metadata: resource(id, 'metadata'), diff: resource(id, 'diff'), files: resource(id, 'files'),
+        comments: resource(id, 'comments'), reviews: resource(id, 'reviews'), threads: resource(id, 'threads') };
+    }
+  const publisher = publishing(db, review, async (connectionId, signal) => {
+    const connection = account(connectionId);
+    if (connection.status === 'disconnected') throw new Error('Account disconnected');
+    const token = await vault.read(connection.credential_ref);
+    if (!token) throw new Error('Connect your GitHub account');
+    return new GitHub(token, request, signal);
+  });
   return {
+    ...publisher,
     async status(): Promise<WorkspaceStatus> {
       const connections = db.prepare('SELECT id, login, status, last_pulled_at AS lastPulledAt FROM connections ORDER BY login')
         .all() as unknown as Connection[];
@@ -239,6 +263,13 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
         json_extract(r.data, '$.title') AS title FROM pull_requests p
         LEFT JOIN pull_resources r ON r.pr_id = p.id AND r.kind = 'metadata'
         ORDER BY p.state = 'open' DESC, json_extract(r.data, '$.updatedAt') DESC, p.repository, p.number`).all() as unknown as WorkspaceStatus['pullRequests'];
+      for (const pr of pullRequests) {
+        const state = db.prepare('SELECT snoozed FROM attention_state WHERE pr_id=?').get(pr.id);
+        pr.attentionReady = !!state;
+        pr.snoozed = !!state?.snoozed;
+        pr.reasons = db.prepare('SELECT event_key AS key, kind FROM attention_events WHERE pr_id=? AND active=1 AND acknowledged=0')
+          .all(pr.id) as unknown as typeof pr.reasons;
+      }
       return { accounts: connections.length, credentialStorageAvailable: await vault.available(), connections, queries: queries(), pullRequests };
     },
 
@@ -261,6 +292,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
     },
 
     disconnect(id: string) {
+      publisher.cancel(id);
       const connection = account(id);
       transaction(() => {
         vault.forget(connection.credential_ref);
@@ -284,6 +316,17 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
       db.prepare('DELETE FROM saved_queries WHERE id = ?').run(id);
     },
 
+    markHandled(id: string, keys: string[]) {
+      transaction(() => {
+        const ack = db.prepare('UPDATE attention_events SET acknowledged=1 WHERE pr_id=? AND event_key=?');
+        for (const key of keys) ack.run(id, key);
+      });
+    },
+    snooze(id: string) {
+      if (!db.prepare('UPDATE attention_state SET snoozed=1 WHERE pr_id=?').run(id).changes) {
+        throw new Error('Pull this PR before snoozing it');
+      }
+    },
     pullProgress(id: string) { return pulling.get(id)?.progress ?? null; },
     cancelPull(id: string) { pulling.get(id)?.controller.abort(); },
 
@@ -352,6 +395,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
             errors.push(`Query “${query}”: ${message(error)}`);
           }
         }
+        const discoveryComplete = errors.length === 0;
         let position = 0;
         for (const target of targets.values()) {
           if (cancellation.signal.aborted || github.stopped) break;
@@ -360,7 +404,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
           try {
             const progress = (stage: string) => { activity.progress = `PR ${position} of ${targets.size} · ${label} · ${stage}`; };
             progress('Fetching metadata and diff');
-            const problems = await refresh(github, id, target, read, progress, cancellation.signal);
+            const problems = await refresh(github, id, target, read, progress, cancellation.signal, discoveryComplete);
             cancellation.signal.throwIfAborted();
             refreshed++;
             errors.push(...problems.map(problem => `${label} · ${problem}`));
@@ -384,11 +428,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
       return cancellation.signal.aborted ? { refreshed, errors: ['Pull cancelled.', ...errors] } : { refreshed, errors };
     },
 
-    review(id: string): Review {
-      if (!db.prepare('SELECT 1 FROM pull_requests WHERE id = ?').get(id)) throw new Error('Pull request not found');
-      return { metadata: resource(id, 'metadata'), diff: resource(id, 'diff'), files: resource(id, 'files'),
-        comments: resource(id, 'comments'), reviews: resource(id, 'reviews'), threads: resource(id, 'threads') };
-    },
+    review,
 
     async readFile(id: string, path: string, side: FileContent['side'], blob: string) {
       const row = db.prepare('SELECT connection_id FROM pull_requests WHERE id = ?').get(id);

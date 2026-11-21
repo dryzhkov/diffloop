@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Comment, DeviceCode, PullResult, Resource, Review, SavedQuery, WorkspaceApi, WorkspaceStatus } from './api';
+import type { Comment, DraftTarget, DeviceCode, PullResult, Resource, Review, SavedQuery, WorkspaceApi, WorkspaceStatus } from './api';
 import './inbox.css';
+import { DraftsView } from './drafts-view';
 import { DiffView } from './diff-view';
 
 declare global { interface Window { workspace: WorkspaceApi } }
 const api = window.workspace;
+const reasonLabels = {
+  direct_request: 'Review requested from you', team_request: 'Team review requested',
+  explicit_rerequest: 'Review requested again', author_reply: 'Author replied to your thread',
+  commits_after_changes_requested: 'New commits since you requested changes',
+};
 const date = (value: string) => new Date(value).toLocaleString();
 const message = (error: unknown) => error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': Error: /, '') : 'Workspace request failed';
 
@@ -58,8 +64,10 @@ function Discussion({ comment }: { comment: Comment }) {
   </article>;
 }
 
-function ReviewPane({ id, review }: { id: string; review: Review }) {
+function ReviewPane({ id, review, onPublished }: { id: string; review: Review; onPublished: () => Promise<void> }) {
   const { metadata, diff, files, comments, reviews, threads } = review;
+  const [draftTarget,setDraftTarget] = useState<DraftTarget>({kind:'pr'});
+  function compose(t: DraftTarget) {setDraftTarget(t); document.getElementById('draft-panel')?.scrollIntoView();}
   const [path, choosePath] = useState('');
   const file = diff.data?.files.find(item => item.path === path) ?? diff.data?.files[0];
   return <section className="review">
@@ -81,7 +89,7 @@ function ReviewPane({ id, review }: { id: string; review: Review }) {
         </select></label>
         {file.previousPath && <p>Previous path {file.previousPath}</p>}
         <DiffView key={JSON.stringify([file.path, diff.data.diffBaseSha, diff.data.headSha, diff.cachedAt])}
-          file={file} diff={diff.data} threads={threads.revision === diff.revision ? threads.data ?? [] : []} />
+          onDraft={anchor => compose({kind:'inline',anchor})} file={file} diff={diff.data} threads={threads.revision === diff.revision ? threads.data ?? [] : []} />
         {([['base', file.previousPath ?? file.path], ['head', file.path]] as const).map(([side, path]) => {
           const cached = files.data?.find(item => item.side === side && item.path === path);
           if ((side === 'base' && file.status === 'added') || (side === 'head' && file.status === 'removed')) return null;
@@ -108,14 +116,20 @@ function ReviewPane({ id, review }: { id: string; review: Review }) {
       {threads.data.map(thread => <details key={thread.id} id={'thread-' + thread.id}>
         <summary>{thread.path}{thread.line && `:${thread.line}`} · {thread.isResolved ? 'Resolved' : 'Unresolved'}
           {thread.isOutdated && ' · Outdated'}</summary>
+        {thread.comments.filter(c=>!c.replyTo && /#discussion_r\d+$/.test(c.url)).map(c=>
+          <button key={c.id} onClick={()=>compose({kind:'reply',parent:c.url.split('#discussion_r')[1]})}>Draft reply</button>)}
+        <button onClick={()=>compose({kind:'thread',thread:thread.id,resolve:!thread.isResolved})}>
+          Prepare {thread.isResolved?'reopen':'resolve'} action</button>
         {thread.comments.map(comment => <Discussion key={comment.id} comment={comment} />)}
       </details>)}
     </>}
+    {metadata.data && <DraftsView onPublished={onPublished} pr={id} head={metadata.data.headSha} target={draftTarget} setTarget={setDraftTarget}/>}
   </section>;
 }
 
 function Inbox() {
   const [status, setStatus] = useState<WorkspaceStatus>();
+  const [showTracked, setShowTracked] = useState(false);
   const [account, setAccount] = useState('');
   const [selected, setSelected] = useState('');
   const [review, setReview] = useState<{ id: string; value: Review }>();
@@ -128,6 +142,8 @@ function Inbox() {
   const [error, setError] = useState('');
   const [result, setResult] = useState<PullResult>();
   const connection = status?.connections.find(item => item.id === account) ?? status?.connections[0];
+  const tracked = status?.pullRequests.filter(pr => pr.connectionId === connection?.id) ?? [];
+  const active = tracked.filter(pr => pr.state === 'open' && !pr.snoozed && pr.reasons.length);
   const [progress, setProgress] = useState('');
   const pullingId = busy === 'Pulling from GitHub…' ? connection?.id : undefined;
   useEffect(() => {
@@ -267,15 +283,27 @@ function Inbox() {
         <QueryEditor key={connection.id} disabled={!!busy}
           onSave={value => run('Saving query…', () => api.saveQuery(connection.id, value))} />
       </details>
-      <h2>Tracked pull requests</h2>
-      {status?.pullRequests.filter(pr => pr.connectionId === connection.id).map(pr =>
-        <button className="pr" key={pr.id} aria-pressed={pr.id === selected} onClick={() => setSelected(pr.id)}>
+      <h2>{showTracked ? 'Tracked pull requests' : 'Needs attention'}</h2>
+      <button aria-pressed={showTracked} onClick={() => setShowTracked(!showTracked)}>
+        {showTracked ? 'Show needs attention' : 'Show all tracked PRs'} ({showTracked ? active.length : tracked.length})
+      </button>
+      {(showTracked ? tracked : active).map(pr => <div key={pr.id}>
+        <button className="pr" aria-pressed={pr.id === selected} onClick={() => setSelected(pr.id)}>
           {pr.repository} #{pr.number} · {pr.title ?? 'Metadata unavailable'} · {pr.state}
-        </button>)}
-      {!status?.pullRequests.some(pr => pr.connectionId === connection.id) && <p>No pull requests cached.</p>}
+        </button>
+        {pr.snoozed && <span>Snoozed · </span>}
+        {[...new Set(pr.reasons.map(reason => reasonLabels[reason.kind]))].join(' · ')}
+        {!pr.attentionReady && pr.state === 'open' && <span>Attention data unavailable</span>}
+        {pr.state === 'open' && pr.reasons.length > 0 && <div className="toolbar">
+          <button disabled={!!busy} onClick={() => run('Marking handled…',
+            () => api.markHandled(pr.id, pr.reasons.map(reason => reason.key)))}>Mark handled</button>
+          {!pr.snoozed && <button disabled={!!busy} onClick={() => run('Snoozing…', () => api.snooze(pr.id))}>Snooze</button>}
+        </div>}
+      </div>)}
+      {!(showTracked ? tracked : active).length && <p>{showTracked ? 'No pull requests cached.' : 'No PRs flagged for attention.'}</p>}
       {review?.id === selected && <>
         <button disabled={!canPull} onClick={() => pull(selected)}>Refresh this PR</button>
-        <ReviewPane key={selected} id={selected} review={review.value} />
+        <ReviewPane onPublished={async () => setStatus(await api.status())} key={selected} id={selected} review={review.value} />
       </>}
     </section>}
   </main>;

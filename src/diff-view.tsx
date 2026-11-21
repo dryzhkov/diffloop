@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react';
-import type { Diff, DiffFile, Threads } from './api';
+import type { CodeAnchor, Diff, DiffFile, Threads } from './api';
 import { anchorFor, parseLines, type Side } from './diff-lines';
 
 const rowHeight = 26;
 const visibleRows = 14;
 type Selection = { side: Side; first: number; last: number };
 
-export function DiffView({ diff, file, threads }: {
-  diff: Diff; file: DiffFile; threads: Threads['threads'];
+export function DiffView({ diff, file, threads, onDraft }: {
+  onDraft:(anchor:CodeAnchor)=>void; diff: Diff; file: DiffFile; threads: Threads['threads'];
 }) {
   const rows = useMemo(() => parseLines(file.patch ?? ''), [file.patch]);
   const [scroll, setScroll] = useState(0);
@@ -65,6 +65,6 @@ export function DiffView({ diff, file, threads }: {
       </div>
     </div>
     {anchor && <p aria-live="polite" className="revision">{anchor.path} · {anchor.side} · lines {anchor.startLine}–{anchor.endLine}
-      <br />{anchor.commitSha} <button onClick={() => select(null)}>Clear selection</button></p>}
+      <br />{anchor.commitSha} <button onClick={() => select(null)}>Clear selection</button> <button onClick={() => onDraft(anchor)}>Draft inline comment</button></p>}
   </>;
 }

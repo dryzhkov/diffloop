@@ -2,6 +2,8 @@ import { ipcMain, shell } from 'electron';
 import { verificationUrl, type githubOAuth } from './oauth';
 import type { workspace } from './workspace';
 
+import type { DraftTarget } from './api';
+
 type Handler = (...args: unknown[]) => unknown;
 type Validator<T> = (value: unknown) => T;
 function string(max: number, pattern?: RegExp): Validator<string> {
@@ -48,6 +50,33 @@ export function registerWorkspace(page: string, service: ReturnType<typeof works
   handle('saveQuery', [2, 3], (connection, expression, existing) =>
     service.saveQuery(id(connection), query(expression).trim(), existing === undefined ? undefined : id(existing)));
   handle('deleteQuery', [1], value => service.deleteQuery(id(value)));
+  function body(value: unknown) {
+    if (typeof value !== 'string' || value.length > 65536) throw new Error('Invalid draft text');
+    return value;
+  }
+  handle('drafts', [1], pr => service.drafts(id(pr)));
+  handle('addDraft', [4], (pr, target, head, text) => service.addDraft(id(pr), target as DraftTarget, sha(head), body(text)));
+  handle('editDraft', [4], (draft, text, included, general) => {
+    if (typeof included !== 'boolean' || typeof general !== 'boolean') throw new Error('Invalid draft options');
+    return service.editDraft(id(draft), body(text), included, general);
+  });
+  handle('discardDraft', [1], draft => service.discardDraft(id(draft)));
+  handle('pushDrafts', [2], (pr, ids) => {
+    if (!Array.isArray(ids)) throw new Error('Invalid selection');
+    return service.pushDrafts(id(pr), ids.map(id));
+  });
+  handle('checkDraft', [1], draft => service.checkDraft(id(draft)));
+  handle('resolveDraft', [1], draft => service.resolveDraft(id(draft)));
+  handle('openDraftUrl', [1], draft => {
+    const url = new URL(service.draftUrl(id(draft)));
+    if (url.origin !== 'https://github.com' || url.username || url.password) throw new Error('Invalid GitHub link');
+    return shell.openExternal(url.href);
+  });
+  handle('markHandled', [2], (value, keys) => {
+    if (!Array.isArray(keys) || keys.some(key => typeof key !== 'string')) throw new Error('Invalid attention keys');
+    return service.markHandled(id(value), keys);
+  });
+  handle('snooze', [1], value => service.snooze(id(value)));
   handle('cancelPull', [1], value => service.cancelPull(id(value)));
   handle('pullProgress', [1], value => service.pullProgress(id(value)));
   handle('pull', [1, 2], (value, pr) => service.pull(id(value), pr === undefined ? undefined : id(pr)));

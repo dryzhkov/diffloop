@@ -32,3 +32,4 @@ input.option { min-width: auto; }
 
 .pull-activity { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; margin-block: .75rem; }
 .pull-activity progress { width: 5rem; }
+textarea { display: block; box-sizing: border-box; width: 100%; min-height: 5rem; margin-block: .5rem; font: inherit; }

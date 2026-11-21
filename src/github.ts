@@ -14,6 +14,10 @@ export class GitHub {
   constructor(private readonly token: string, private readonly request = fetch, private readonly cancellation?: AbortSignal) {}
 
   async get<T>(path: string, graph?: { query: string; variables: object }) {
+    return this.send<T>(path, graph);
+  }
+
+  async send<T>(path: string, payload?: object) {
     if (this.cancellation?.aborted) throw new Error('Pull cancelled');
     if (this.stop) throw this.stop;
     const url = new URL(path, origin);
@@ -26,7 +30,7 @@ export class GitHub {
         headers: { Authorization: `Bearer ${this.token}`, Accept: 'application/vnd.github+json',
           'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28' },
         redirect: 'manual', signal,
-        ...(graph && { method: 'POST', body: JSON.stringify(graph) }),
+        ...(payload && { method: 'POST', body: JSON.stringify(payload) }),
       });
     } catch {
       if (this.cancellation?.aborted) throw new Error('Pull cancelled');
@@ -125,9 +129,9 @@ export async function fetchComments(github: GitHub, root: string, number: number
 
 export async function fetchReviews(github: GitHub, root: string, number: number) {
   const reviews = [];
-  for await (const item of github.pages<RestComment & { state: string }>(`${root}/pulls/${number}/reviews?per_page=100`,
-    data => data as Array<RestComment & { state: string }>)) {
-    reviews.push({ ...comment(item), state: item.state });
+  for await (const item of github.pages<RestComment & { state: string; commit_id?: string }>(`${root}/pulls/${number}/reviews?per_page=100`,
+    data => data as Array<RestComment & { state: string; commit_id?: string }>)) {
+    reviews.push({ ...comment(item), state: item.state, commitSha: item.commit_id });
   }
   return reviews;
 }

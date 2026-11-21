@@ -17,7 +17,7 @@ try {
   const { openStore } = await import(join(directory, 'store.mjs'));
   const { workspace } = await import(join(directory, 'workspace.mjs'));
   const fresh = openStore(':memory:');
-  assert.equal(fresh.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(fresh.prepare('PRAGMA user_version').get().user_version, 4);
   fresh.close();
   db = new DatabaseSync(database);
   db.exec(`
@@ -32,7 +32,7 @@ try {
   `);
   db.close();
   db = openStore(database);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 4);
   assert.equal(db.prepare("SELECT login FROM connections WHERE id = 'legacy-id'").get().login, 'legacy');
   assert.equal(db.prepare("SELECT hex(ciphertext) AS value FROM credentials WHERE ref = 'legacy-ref'").get().value, '6C6567616379');
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
@@ -65,6 +65,9 @@ try {
     ({ nodes, totalCount, pageInfo: { endCursor, hasNextPage: !!endCursor } });
   const calls = [];
   let mode = 'healthy';
+  const published = [];
+  let onPublish;
+
   let metadataReads = 0;
   const request = async (url, options) => {
     const path = url.pathname;
@@ -76,6 +79,25 @@ try {
     if (mode === 'unauthorized') return new Response(null, { status: 401 });
     if (mode === 'slow') return new Promise((_resolve, reject) =>
       options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+    if (/\/issues\/\d+\/comments$/.test(path) && options.method === 'POST') {
+      const payload = JSON.parse(options.body);
+      if (payload.body.startsWith('reject')) return new Response(null, {status:422});
+      const remote = {id:100 + published.length, html_url:'https://github.com/owner/repo/pull/1', body:payload.body, user:{login:'reviewer'}};
+      published.push(remote);
+      onPublish?.();
+      if (payload.body.startsWith('uncertain')) throw new Error('response lost');
+      return Response.json(remote);
+    }
+    if (published.length && /\/issues\/\d+\/comments$/.test(path)) return Response.json(published);
+    if (/\/pulls\/\d+\/reviews$/.test(path) && options.method === 'POST') {
+      const payload = JSON.parse(options.body);
+      assert.equal(payload.commit_id, head);
+      assert.equal(payload.event, 'APPROVE');
+      return Response.json({id:800,html_url:'https://github.com/owner/repo/pull/1#review'});
+    }
+    if (path === '/graphql' && JSON.parse(options.body).query.startsWith('mutation')) {
+      return Response.json({data:{resolveReviewThread:{thread:{id:'thread',isResolved:true}}}});
+    }
     if (path === '/user') {
       return Response.json(options.headers.Authorization === 'Bearer accountTwo' ? { id: 2, login: 'other' } : { id: 1, login: 'reviewer' });
     }
@@ -96,7 +118,7 @@ try {
         state: mode === 'close' && number === 2 ? 'closed' : 'open', updated_at: '2026-01-01T00:00:00Z',
         base: { sha: base, repo: { id: 10, full_name: 'owner/repo' } },
         head: { sha: mode === 'race' && metadataReads > 1 ? newHead : head, repo: { full_name: 'fork/repo' } },
-        changed_files: 1 });
+        requested_reviewers: [{ login: 'reviewer' }], requested_teams: [], changed_files: 1 });
     }
     if (/\/pulls\/\d+\/files$/.test(path)) {
       if (mode === 'file-error') return new Response(null, { status: 503 });
@@ -123,6 +145,10 @@ try {
     }
     if (/\/issues\/\d+\/comments$/.test(path)) return Response.json([{ id: 7, body: 'General', user: null }]);
     if (/\/pulls\/\d+\/reviews$/.test(path)) return Response.json([]);
+    if (/\/issues\/\d+\/events$/.test(path)) return Response.json([
+      { event: 'review_requested', id: 1, requested_reviewer: { login: 'reviewer' } },
+      ...(mode === 'rerequest' ? [{ event: 'review_requested', id: 2, requested_reviewer: { login: 'reviewer' } }] : []),
+    ]);
     if (path === '/graphql') {
       if (mode === 'thread-error') return Response.json({ errors: [{ type: 'FORBIDDEN' }] });
       const { query, variables } = JSON.parse(options.body);
@@ -162,6 +188,46 @@ try {
   assert.equal(await service.readFile(first.id, file.filename, 'head', blob), 'hello\n');
   await assert.rejects(service.readFile(first.id, file.filename, 'head', oldBlob), /snapshot changed/);
   assert.equal(JSON.stringify((await service.status())).includes('replacement'), false);
+
+  const attention = async () => (await service.status()).pullRequests.find(pr => pr.id === first.id);
+  assert.deepEqual((await attention()).reasons.map(r => r.kind), ['direct_request']);
+  service.snooze(first.id);
+  await service.pull('legacy-id', first.id);
+  assert.equal((await attention()).snoozed, true);
+  service.markHandled(first.id, (await attention()).reasons.map(r => r.key));
+  await service.pull('legacy-id', first.id);
+  assert.deepEqual((await attention()).reasons, []);
+  mode = 'rerequest';
+  await service.pull('legacy-id', first.id);
+  assert.equal((await attention()).snoozed, false);
+  assert.deepEqual((await attention()).reasons.map(r => r.kind).sort(), ['direct_request','explicit_rerequest']);
+  service.addDraft(first.id,{kind:'pr'},head,'reject this');
+  service.addDraft(first.id,{kind:'pr'},head,'send this');
+  const [bad,good] = service.drafts(first.id);
+  onPublish = () => service.editDraft(good.id,'updated during Push',true,false);
+  await service.pushDrafts(first.id,[bad.id,good.id]);
+  onPublish = undefined;
+  assert.deepEqual(service.drafts(first.id).map(d=>d.status), ['failed','pushed']);
+  assert.equal(service.drafts(first.id)[1].body,'updated during Push');
+  assert.match(published[0].body,/^send this/);
+  assert.equal((await attention()).reasons.length,2);
+  await assert.rejects(service.pushDrafts(first.id,[good.id]),/Select local/);
+  service.editDraft(bad.id,'uncertain response',true,false);
+  await service.pushDrafts(first.id,[bad.id]);
+  assert.equal(service.drafts(first.id)[0].status,'uncertain');
+  await assert.rejects(service.pushDrafts(first.id,[bad.id]),/Select local/);
+  await service.checkDraft(bad.id);
+  assert.equal(service.drafts(first.id)[0].status,'pushed');
+  assert.equal(published.length,2);
+  service.addDraft(first.id,{kind:'thread',thread:'thread',resolve:true},head,'');
+  const threadAction = service.drafts(first.id).at(-1);
+  await service.pushDrafts(first.id,[threadAction.id]);
+  assert.equal(service.drafts(first.id).at(-1).status,'pushed');
+  assert.equal((await attention()).reasons.length,2);
+  service.addDraft(first.id,{kind:'review',event:'APPROVE'},head,'');
+  await service.pushDrafts(first.id,[service.drafts(first.id).at(-1).id]);
+  assert.equal(service.drafts(first.id).at(-1).status,'pushed');
+  assert.equal((await attention()).reasons.length,0);
 
   service.deleteQuery(query.id);
   mode = 'close';
@@ -231,6 +297,7 @@ try {
   db = openStore(database);
   mode = 'offline';
   service = workspace(db, vault, cache, request);
+  assert.equal(service.drafts(first.id)[1].body,'updated during Push');
   const beforeOffline = calls.length;
   assert.equal(service.review(first.id).metadata.data.title, 'Test PR 1');
   assert.equal(await service.readFile(first.id, file.filename, 'head', blob), 'hello\n');

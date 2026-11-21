@@ -6,7 +6,11 @@ export interface Connection {
 }
 
 export interface SavedQuery { id: string; connectionId: string; query: string }
-export interface TrackedPR { id: string; repository: string; number: number; state: string; title: string | null }
+export interface AttentionReason {
+  key: string;
+  kind: 'direct_request' | 'team_request' | 'explicit_rerequest' | 'author_reply' | 'commits_after_changes_requested';
+}
+export interface TrackedPR { reasons: AttentionReason[]; snoozed: boolean; attentionReady: boolean; id: string; repository: string; number: number; state: string; title: string | null }
 
 export interface Metadata {
   title: string;
@@ -54,7 +58,7 @@ export interface Comment {
 
 export interface Threads {
   comments: Comment[];
-  reviews: Array<Comment & { state: string }>;
+  reviews: Array<Comment & { state: string; commitSha?: string }>;
   threads: Array<{ id: string; path: string; line: number | null; diffSide?: 'LEFT' | 'RIGHT'; isResolved: boolean;
     isOutdated: boolean; comments: Array<Comment & { replyTo: { id: string } | null }> }>;
 }
@@ -99,9 +103,28 @@ export interface WorkspaceApi {
   disconnect(id: string): Promise<void>;
   saveQuery(connectionId: string, query: string, id?: string): Promise<void>;
   deleteQuery(id: string): Promise<void>;
+  openDraftUrl(id: string): Promise<void>;
+  resolveDraft(id: string): Promise<void>;
+  drafts(pr: string): Promise<Draft[]>;
+  addDraft(pr: string, target: DraftTarget, head: string, body: string): Promise<void>;
+  editDraft(id: string, body: string, included: boolean, general: boolean): Promise<void>;
+  discardDraft(id: string): Promise<void>;
+  pushDrafts(pr: string, ids: string[]): Promise<void>;
+  checkDraft(id: string): Promise<void>;
+  markHandled(id: string, keys: string[]): Promise<void>;
+  snooze(id: string): Promise<void>;
   cancelPull(id: string): Promise<void>;
   pullProgress(id: string): Promise<string | null>;
   pull(connectionId: string, prId?: string): Promise<PullResult>;
   review(id: string): Promise<Review>;
   readFile(id: string, path: string, side: 'base' | 'head', blob: string): Promise<string>;
+}
+
+export interface CodeAnchor { path: string; side: 'base' | 'head'; startLine: number; endLine: number; commitSha: string }
+export type DraftTarget = { kind: 'pr' } | { kind: 'inline'; anchor: CodeAnchor } |
+  { kind: 'reply'; parent: string } | { kind: 'review'; event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES' } |
+  { kind: 'thread'; thread: string; resolve: boolean };
+export interface Draft {
+  id: string; target: DraftTarget; head: string; body: string; included: boolean;
+  status: 'local' | 'failed' | 'uncertain' | 'pushing' | 'pushed'; detail: string; url: string;
 }
