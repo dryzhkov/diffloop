@@ -3,7 +3,11 @@ import type { Draft, DraftTarget } from './api';
 
 function label(t: DraftTarget) {
   switch (t.kind) {
-    case 'inline': return `${t.anchor.path} · ${t.anchor.side} lines ${t.anchor.startLine}–${t.anchor.endLine}`;
+    case 'inline': {
+      const { path, side, startLine, endLine } = t.anchor;
+      const lines = startLine === endLine ? `line ${startLine}` : `lines ${startLine}–${endLine}`;
+      return `${path} · ${side} ${lines}`;
+    }
     case 'reply': return 'Reply to comment ' + t.parent;
     case 'review': return {APPROVE:'Approve', REQUEST_CHANGES:'Request changes', COMMENT:'Submit review'}[t.event];
     case 'thread': return (t.resolve ? 'Resolve' : 'Reopen') + ' thread ' + t.thread;
@@ -17,7 +21,7 @@ function DraftRow({ pr, d, head, run, onPublished }: {onPublished:()=>Promise<vo
   const ready = d.status === 'local' || d.status === 'failed';
   const separate = d.target.kind === 'thread' || d.target.kind === 'review';
   return <article>
-    <strong>{label(d.target)}</strong> · {d.status}
+    <strong>{label(d.target)}</strong> · {d.status}{d.agentRunId && ' · Agent finding'}
     {d.head !== head && d.status !== 'pushed' && <p>Revision changed. Recheck against {d.head}.</p>}
     {d.target.kind !== 'thread' && <textarea aria-label="Draft body" value={body} readOnly={d.status === 'pushed'}
       onChange={e => setBody(e.target.value)} />}
@@ -39,14 +43,14 @@ function DraftRow({ pr, d, head, run, onPublished }: {onPublished:()=>Promise<vo
 }
 
 
-export function DraftsView({pr,head,target,setTarget,onPublished}: {onPublished:()=>Promise<void>; pr:string; head:string; target:DraftTarget; setTarget:(t:DraftTarget)=>void}) {
+export function DraftsView({pr,head,target,setTarget,onPublished,agentDraftRevision}: {agentDraftRevision?: number; onPublished:()=>Promise<void>; pr:string; head:string; target:DraftTarget; setTarget:(t:DraftTarget)=>void}) {
   const [items,setItems] = useState<Draft[]>([]);
   const [body,setBody] = useState('');
   const [error,setError] = useState('');
   const [pending,setPending] = useState(0);
   const api = window.workspace;
   async function reload() {setItems(await api.drafts(pr));}
-  useEffect(() => {void reload().catch(e => setError(String(e)));},[pr]);
+  useEffect(() => {void reload().catch(e => setError(String(e)));},[pr,agentDraftRevision]);
   async function run(fn:()=>Promise<void>) {
     setPending(n=>n+1); setError('');
     try {await fn(); await reload();} catch(e) {setError(String(e));} finally {setPending(n=>n-1);}

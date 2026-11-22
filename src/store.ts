@@ -14,7 +14,7 @@ export function openStore(path: string) {
         );
         PRAGMA user_version = 1;
       `);
-    } else if (version !== 1 && version !== 2 && version !== 3 && version !== 4) {
+    } else if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5) {
       throw new Error('Unsupported Diffloop database version');
     }
     if (version === 0 || version === 1) db.exec(`
@@ -49,7 +49,7 @@ export function openStore(path: string) {
       );
       PRAGMA user_version = 3;
     `);
-    if (version !== 4) db.exec(`
+    if (Number(version) < 4) db.exec(`
       CREATE TABLE drafts (
         id TEXT PRIMARY KEY, pr TEXT NOT NULL REFERENCES pull_requests(id), target TEXT NOT NULL,
         head TEXT NOT NULL, body TEXT NOT NULL, included INTEGER NOT NULL DEFAULT 1,
@@ -62,6 +62,27 @@ export function openStore(path: string) {
       );
       CREATE INDEX attempts_by_draft ON push_attempts(draft);
       PRAGMA user_version = 4;
+    `);
+    if (Number(version) < 5) db.exec(`
+      CREATE TABLE agent_grants (
+        connection TEXT NOT NULL REFERENCES connections(id), repository TEXT NOT NULL,
+        policy TEXT NOT NULL, PRIMARY KEY(connection, repository)
+      );
+      CREATE TABLE agent_local_roots (
+        connection TEXT NOT NULL REFERENCES connections(id), repository TEXT NOT NULL,
+        path TEXT NOT NULL, PRIMARY KEY(connection, repository)
+      );
+      CREATE TABLE agent_configs (
+        id TEXT PRIMARY KEY, connection TEXT NOT NULL REFERENCES connections(id), config TEXT NOT NULL
+      );
+      CREATE TABLE agent_runs (
+        id TEXT PRIMARY KEY, pr TEXT NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+        record TEXT NOT NULL
+      );
+      CREATE INDEX agent_runs_by_pr ON agent_runs(pr);
+      ALTER TABLE drafts ADD COLUMN agentRunId TEXT REFERENCES agent_runs(id);
+      ALTER TABLE drafts ADD COLUMN findingId TEXT;
+      PRAGMA user_version = 5;
     `);
     db.exec('COMMIT');
     return db;

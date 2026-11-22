@@ -26,9 +26,12 @@ function openWindow() {
 app.whenReady().then(async () => {
   const db = openStore(join(app.getPath('userData'), 'workspace.sqlite'));
   const vault = credentials(db);
-  app.once('will-quit', () => db.close());
   session.defaultSession.setPermissionRequestHandler((_web, _permission, callback) => callback(false));
   const service = workspace(db, vault, join(app.getPath('userData'), 'code-cache'));
+  app.once('will-quit', () => {
+    service.stopAgentRuns();
+    db.close();
+  });
   const oauth = githubOAuth(process.env.DIFFLOOP_GITHUB_OAUTH_CLIENT_ID, service.connect);
   registerWorkspace(page, service, oauth);
   app.on('window-all-closed', oauth.cancel);

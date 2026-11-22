@@ -39,3 +39,11 @@ Before enabling an adapter, run an isolated fixture with one permitted context r
 Run `node scripts/probe-codex.mjs` with Codex on PATH. On 0.171.0 the live stdio handshake, ChatGPT account check, skill listing, local plugin marketplace listing and ephemeral thread creation passed. The server returned a read-only sandbox and disabled approval prompts. The probe uses an empty temporary directory and submits no model turn. These observations cover session setup. Shell exclusion, scoped reads, selected-extension isolation and draft permission enforcement still require validation before enabling reviews.
 
 PAT-specific tests and the Claude Code and Copilot probes are deferred while development focuses on Codex.
+
+### Codex capability probe
+
+Run `node scripts/probe-codex-boundary.mjs` with Codex on PATH. The probe creates a temporary Codex home with one synthetic unselected skill. It starts an ephemeral read-only thread with no environments and one dynamic review tool. It disables shell, plugins, apps, hooks, web search, and other built-ins, then directs a synthetic turn to a loopback Responses stub. The stub captures the model-facing request and rejects it before any tool can run.
+
+On Codex 0.171.0 the model-facing request included the synthetic review tool and the unexpected `request_user_input` tool. The request also advertised the unselected skill. The probe exits with a failing allowlist check, and Diffloop has no enabled Codex adapter. Enabling live reviews requires an effective tool and context allowlist and confirmation that the runtime blocks shell, file edits, remote writes, and unselected extensions. Selective loading of a registered skill or plugin and checkout reads remain open.
+
+`node scripts/test-agents.mjs` exercises the application boundary with synthetic cached PR data and an in-process runtime. The fixture checks context intersection and exact selection/thread isolation, cancellation and in-flight revocation, run and finding persistence, draft consent and provenance, user editing, and the absence of GitHub publishing access. Neither fixture submits real PR context.

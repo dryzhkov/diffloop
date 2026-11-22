@@ -6,8 +6,8 @@ const rowHeight = 26;
 const visibleRows = 14;
 type Selection = { side: Side; first: number; last: number };
 
-export function DiffView({ diff, file, threads, onDraft }: {
-  onDraft:(anchor:CodeAnchor)=>void; diff: Diff; file: DiffFile; threads: Threads['threads'];
+export function DiffView({ diff, file, threads, onDraft, onReview }: {
+  onReview:(anchor:CodeAnchor)=>void; onDraft:(anchor:CodeAnchor)=>void; diff: Diff; file: DiffFile; threads: Threads['threads'];
 }) {
   const rows = useMemo(() => parseLines(file.patch ?? ''), [file.patch]);
   const [scroll, setScroll] = useState(0);
@@ -27,7 +27,7 @@ export function DiffView({ diff, file, threads, onDraft }: {
   }, [threads, file.path]);
   if (!file.patch) return <p>{file.patchError ?? 'Patch unavailable offline.'}</p>;
   return <>
-    <p>{diff.diffBaseSha ? 'Select a line number. Shift-select another on the same side and hunk to select a range.' :
+    <p>{diff.diffBaseSha ? 'Use + next to a line number to draft a comment. To comment on a range, select a line number and Shift-select another in the same hunk.' :
       'Line selection unavailable because the cached patch has no verified merge base.'}</p>
     <div className="patch" aria-label={`Diff for ${file.path}`} tabIndex={0}
       style={{ maxHeight: visibleRows * rowHeight }} onScroll={event => setScroll(event.currentTarget.scrollTop)}>
@@ -40,13 +40,17 @@ export function DiffView({ diff, file, threads, onDraft }: {
                 const number = row[side];
                 const active = anchor && anchor.side === side && number !== undefined &&
                   number >= anchor.startLine && number <= anchor.endLine;
-                return number === undefined ? <span key={side} /> :
-                  <button key={side} aria-label={`${side} line ${number}`} aria-pressed={!!active}
+                const lineAnchor = anchorFor(diff, file, side, row, row);
+                return number === undefined ? <span key={side} /> : <span key={side} className="line-gutter">
+                  <button aria-label={`${side} line ${number}`} aria-pressed={!!active}
                     disabled={!diff.diffBaseSha} onClick={event => {
                       const extend = event.shiftKey && selection?.side === side &&
                         rows[selection.first].hunk === row.hunk;
                       select({ side, first: extend ? selection.first : index, last: index });
-                    }}>{number}</button>;
+                    }}>{number}</button>
+                  {lineAnchor && <button aria-label={`Comment on ${side} line ${number}`}
+                    title={`Comment on ${side} line ${number}`} onClick={() => onDraft(lineAnchor)}>+</button>}
+                </span>;
               })}
               <code>{row.text}</code>
               {(['LEFT', 'RIGHT'] as const).flatMap(side =>
@@ -65,6 +69,6 @@ export function DiffView({ diff, file, threads, onDraft }: {
       </div>
     </div>
     {anchor && <p aria-live="polite" className="revision">{anchor.path} · {anchor.side} · lines {anchor.startLine}–{anchor.endLine}
-      <br />{anchor.commitSha} <button onClick={() => select(null)}>Clear selection</button> <button onClick={() => onDraft(anchor)}>Draft inline comment</button></p>}
+      <br />{anchor.commitSha} <button onClick={() => select(null)}>Clear selection</button> <button onClick={() => onDraft(anchor)}>Draft inline comment</button> <button onClick={() => onReview(anchor)}>Review selection with Codex</button></p>}
   </>;
 }

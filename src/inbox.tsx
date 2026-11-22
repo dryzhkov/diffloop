@@ -1,3 +1,5 @@
+import { AgentsView } from './agents-view';
+import type { AgentScope } from './api';
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Comment, DraftTarget, DeviceCode, PullResult, Resource, Review, SavedQuery, WorkspaceApi, WorkspaceStatus } from './api';
@@ -66,6 +68,16 @@ function Discussion({ comment }: { comment: Comment }) {
 
 function ReviewPane({ id, review, onPublished }: { id: string; review: Review; onPublished: () => Promise<void> }) {
   const { metadata, diff, files, comments, reviews, threads } = review;
+  const [scope, setScope] = useState<AgentScope>({ kind: 'pr' });
+  const [agentDraftRevision, advanceDrafts] = useState(0);
+  function chooseScope(next: AgentScope) {
+    setScope(next);
+    const panel = document.getElementById('agent-review') as HTMLDetailsElement | null;
+    if (panel) {
+      panel.open = true;
+      panel.scrollIntoView();
+    }
+  }
   const [draftTarget,setDraftTarget] = useState<DraftTarget>({kind:'pr'});
   function compose(t: DraftTarget) {setDraftTarget(t); document.getElementById('draft-panel')?.scrollIntoView();}
   const [path, choosePath] = useState('');
@@ -89,7 +101,7 @@ function ReviewPane({ id, review, onPublished }: { id: string; review: Review; o
         </select></label>
         {file.previousPath && <p>Previous path {file.previousPath}</p>}
         <DiffView key={JSON.stringify([file.path, diff.data.diffBaseSha, diff.data.headSha, diff.cachedAt])}
-          onDraft={anchor => compose({kind:'inline',anchor})} file={file} diff={diff.data} threads={threads.revision === diff.revision ? threads.data ?? [] : []} />
+          onReview={anchor => chooseScope({ kind: 'selection', anchor })} onDraft={anchor => compose({kind:'inline',anchor})} file={file} diff={diff.data} threads={threads.revision === diff.revision ? threads.data ?? [] : []} />
         {([['base', file.previousPath ?? file.path], ['head', file.path]] as const).map(([side, path]) => {
           const cached = files.data?.find(item => item.side === side && item.path === path);
           if ((side === 'base' && file.status === 'added') || (side === 'head' && file.status === 'removed')) return null;
@@ -116,6 +128,7 @@ function ReviewPane({ id, review, onPublished }: { id: string; review: Review; o
       {threads.data.map(thread => <details key={thread.id} id={'thread-' + thread.id}>
         <summary>{thread.path}{thread.line && `:${thread.line}`} · {thread.isResolved ? 'Resolved' : 'Unresolved'}
           {thread.isOutdated && ' · Outdated'}</summary>
+        <button onClick={() => chooseScope({ kind: 'thread', thread: thread.id })}>Review this thread with Codex</button>
         {thread.comments.filter(c=>!c.replyTo && /#discussion_r\d+$/.test(c.url)).map(c=>
           <button key={c.id} onClick={()=>compose({kind:'reply',parent:c.url.split('#discussion_r')[1]})}>Draft reply</button>)}
         <button onClick={()=>compose({kind:'thread',thread:thread.id,resolve:!thread.isResolved})}>
@@ -123,7 +136,10 @@ function ReviewPane({ id, review, onPublished }: { id: string; review: Review; o
         {thread.comments.map(comment => <Discussion key={comment.id} comment={comment} />)}
       </details>)}
     </>}
-    {metadata.data && <DraftsView onPublished={onPublished} pr={id} head={metadata.data.headSha} target={draftTarget} setTarget={setDraftTarget}/>}
+    {metadata.data && <AgentsView pr={id} scope={scope} clearScope={() => setScope({ kind: 'pr' })}
+      head={metadata.data.headSha} base={metadata.data.baseSha} diffBase={diff.data?.diffBaseSha ?? null}
+      onDraftsChanged={() => advanceDrafts(n => n + 1)} />}
+    {metadata.data && <DraftsView agentDraftRevision={agentDraftRevision} onPublished={onPublished} pr={id} head={metadata.data.headSha} target={draftTarget} setTarget={setDraftTarget}/>}
   </section>;
 }
 

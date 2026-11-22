@@ -94,6 +94,14 @@ export interface DeviceCode { userCode: string; expiresAt: number }
 
 export interface WorkspaceApi {
   status(): Promise<WorkspaceStatus>;
+  agentState(pr: string): Promise<AgentState>;
+  agentPolicy(pr: string, repository: boolean, policy: AgentPolicy | null): Promise<void>;
+  agentMap(pr: string, remove: boolean): Promise<void>;
+  agentConfig(pr: string, config: AgentConfig): Promise<AgentConfig>;
+  agentDeleteConfig(pr: string, config: string): Promise<void>;
+  agentStart(pr: string, config: string, scope: AgentScope, allowDrafts: boolean): Promise<string>;
+  agentCancel(pr: string, run: string): Promise<void>;
+  agentFinding(pr: string, run: string, finding: string, draft: boolean): Promise<void>;
   oauthAvailable(): Promise<boolean>;
   startOAuth(privateRepos: boolean): Promise<DeviceCode>;
   openOAuth(): Promise<void>;
@@ -126,5 +134,65 @@ export type DraftTarget = { kind: 'pr' } | { kind: 'inline'; anchor: CodeAnchor 
   { kind: 'thread'; thread: string; resolve: boolean };
 export interface Draft {
   id: string; target: DraftTarget; head: string; body: string; included: boolean;
+  agentRunId?: string | null; findingId?: string | null;
   status: 'local' | 'failed' | 'uncertain' | 'pushing' | 'pushed'; detail: string; url: string;
+}
+
+export const reviewContext = ['diff', 'changed_files', 'pr_description', 'review_threads'] as const;
+export type ReviewContext = typeof reviewContext[number];
+export interface AgentPolicy {
+  enabled: boolean;
+  context: ReviewContext[];
+  allowDrafts: boolean;
+}
+export interface AgentConfig {
+  id: string;
+  name: string;
+  model: string;
+  review: { kind: 'instructions' | 'skill' | 'plugin'; text: string };
+  context: ReviewContext[];
+  allowDrafts: boolean;
+}
+export type AgentScope = { kind: 'pr' } | { kind: 'selection'; anchor: CodeAnchor } | { kind: 'thread'; thread: string };
+export interface AgentResource {
+  key: string;
+  kind: ReviewContext;
+  revision: string;
+  source: 'github';
+}
+export interface AgentFinding {
+  id: string;
+  title: string;
+  evidence: string;
+  explanation: string;
+  anchor?: CodeAnchor;
+  suggestedComment?: string;
+  disposition: 'open' | 'dismissed' | 'converted_to_draft';
+}
+export interface AgentRun {
+  id: string;
+  config: AgentConfig;
+  scope: AgentScope;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  base: string;
+  head: string;
+  diffBase: string | null;
+  runtime: string;
+  model: string;
+  allowDrafts: boolean;
+  grantedContext: ReviewContext[];
+  started: string;
+  finished?: string;
+  error?: string;
+  findings: AgentFinding[];
+  manifest: Array<AgentResource & { hash: string; via: 'read' | 'search' }>;
+  searches: Array<{ query: string; resources: string[]; truncated: boolean }>;
+}
+export interface AgentState {
+  blocked: string | null;
+  connection: AgentPolicy;
+  repository: AgentPolicy | null;
+  localRoot: string | null;
+  configs: AgentConfig[];
+  runs: AgentRun[];
 }

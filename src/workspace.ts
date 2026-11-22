@@ -1,4 +1,5 @@
 import { reconcile, observeRequests, type RequestTargets } from './attention';
+import { agents } from './agents';
 import { publishing } from './publishing';
 import { randomUUID } from 'node:crypto';
 import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -247,6 +248,16 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
       return { metadata: resource(id, 'metadata'), diff: resource(id, 'diff'), files: resource(id, 'files'),
         comments: resource(id, 'comments'), reviews: resource(id, 'reviews'), threads: resource(id, 'threads') };
     }
+  async function cachedFile(id: string, path: string, side: FileContent['side'], blob: string) {
+    const row = db.prepare('SELECT connection_id FROM pull_requests WHERE id = ?').get(id);
+    const file = resource<FileContent[]>(id, 'files').data?.find(item => item.path === path && item.side === side);
+    if (!row || !isSha(file?.blob)) throw new Error(file?.error ?? 'File is not cached');
+    if (file.blob !== blob) throw new Error('File snapshot changed. Reopen the pull request to view its latest cache.');
+    return readFile(join(cacheDir(String(row.connection_id)), file.blob), 'utf8').catch(() => {
+      throw new Error('Cached file could not be read');
+    });
+  }
+  const reviewer = agents(db, review, (pr, file) => cachedFile(pr, file.path, file.side, file.blob!));
   const publisher = publishing(db, review, async (connectionId, signal) => {
     const connection = account(connectionId);
     if (connection.status === 'disconnected') throw new Error('Account disconnected');
@@ -256,6 +267,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
   });
   return {
     ...publisher,
+    ...reviewer,
     async status(): Promise<WorkspaceStatus> {
       const connections = db.prepare('SELECT id, login, status, last_pulled_at AS lastPulledAt FROM connections ORDER BY login')
         .all() as unknown as Connection[];
@@ -293,6 +305,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
 
     disconnect(id: string) {
       publisher.cancel(id);
+      reviewer.cancelConnection(id);
       const connection = account(id);
       transaction(() => {
         vault.forget(connection.credential_ref);
@@ -430,14 +443,6 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
 
     review,
 
-    async readFile(id: string, path: string, side: FileContent['side'], blob: string) {
-      const row = db.prepare('SELECT connection_id FROM pull_requests WHERE id = ?').get(id);
-      const file = resource<FileContent[]>(id, 'files').data?.find(item => item.path === path && item.side === side);
-      if (!row || !isSha(file?.blob)) throw new Error(file?.error ?? 'File is not cached');
-      if (file.blob !== blob) throw new Error('File snapshot changed. Reopen the pull request to view its latest cache.');
-      return readFile(join(cacheDir(String(row.connection_id)), file.blob), 'utf8').catch(() => {
-        throw new Error('Cached file could not be read');
-      });
-    },
+    readFile: cachedFile,
   };
 }

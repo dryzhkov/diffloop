@@ -315,16 +315,16 @@ The interfaces above describe domain records, not the full database schema. Pers
 
 ## Implementation tasks
 
-1. Validate PAT access, GitHub comment/review APIs, and runtime authentication, extensions, and permission enforcement.
-2. Bootstrap Electron/React, validated preload APIs, SQLite migrations, and credential storage.
-3. Add PAT connections, saved PR queries, explicit Pull, and persistent offline review caches.
-4. Build virtualized diffs, selections, threads, and comment anchors; show missing or incomplete context.
-5. Implement inbox reasons, activity baselines, Mark handled, and Pull-driven snooze wake-ups.
-6. Add local drafts, per-comment Push/retry, simple conflict handling, and separate review/thread actions.
-7. Build agent connections, repository grants, local mappings, and restricted context and local-draft tools.
-8. Add agent configurations, scoped runs, cancellation, findings, agent-created drafts, and history.
-9. Test offline/restart workflows, Pull preservation, partial Push failures, uncertain retries, and agent publishing restrictions.
-10. Sign, notarize, and verify macOS releases; publish a Homebrew cask. Assess Windows separately.
+1. **Partially validated.** GitHub reads and Codex session setup were exercised. Fine-grained PAT permissions, live GitHub writes, and runtime extension and permission enforcement checks remain open. See [stage-one observations](docs/stage-one.md).
+2. **Implemented.** Bootstrap Electron/React, validated preload APIs, SQLite migrations, and credential storage.
+3. **Implemented.** Add PAT connections, saved PR queries, explicit Pull, and persistent offline review caches.
+4. **Implemented.** Build virtualized diffs, selections, threads, and comment anchors; show missing or incomplete context.
+5. **Implemented.** Implement inbox reasons, activity baselines, Mark handled, and Pull-driven snooze wake-ups.
+6. **Implemented.** Add local drafts, per-comment Push/retry, simple conflict handling, and separate review/thread actions. Live publishing validation remains part of stage 1.
+7. **Partially implemented.** Added per-GitHub-connection Codex grants, stricter repository overrides, local folder mappings, and restricted cached-GitHub context and local-draft tools. Local checkout access and Codex execution remain disabled. The [synthetic capability probe](docs/stage-one.md#codex-capability-probe) observed an unselected skill and an extra built-in tool.
+8. **Implemented with a synthetic runtime.** Added Codex configurations, PR, selection, and thread scopes, cancellation, persisted findings and run history, and local drafts with run provenance. Live runs and registered extension resolution are gated on runtime isolation.
+9. **Partially covered.** Fixtures exercise offline/restart workflows, partial Push failures, and uncertain-outcome recovery. Agent fixtures cover scope isolation, revocation during a read, draft consent, and the absence of publishing tools. Repeat the capability checks with a live adapter before enabling it.
+10. **Pending.** Sign, notarize, and verify macOS releases; publish a Homebrew cask. Assess Windows separately.
 
 ## Contract references
 

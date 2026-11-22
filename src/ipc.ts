@@ -1,8 +1,8 @@
-import { ipcMain, shell } from 'electron';
+import { dialog, ipcMain, shell } from 'electron';
 import { verificationUrl, type githubOAuth } from './oauth';
 import type { workspace } from './workspace';
 
-import type { DraftTarget } from './api';
+import type { AgentConfig, AgentPolicy, AgentScope, DraftTarget } from './api';
 
 type Handler = (...args: unknown[]) => unknown;
 type Validator<T> = (value: unknown) => T;
@@ -44,6 +44,23 @@ export function registerWorkspace(page: string, service: ReturnType<typeof works
   handle('openOAuth', [0], () => shell.openExternal(verificationUrl));
   handle('finishOAuth', [0], oauth.finish);
   handle('cancelOAuth', [0], oauth.cancel);
+  function boolean(value: unknown) {
+    if (typeof value !== 'boolean') throw new Error('Invalid agent option');
+    return value;
+  }
+  handle('agentState', [1], pr => service.agentState(id(pr)));
+  handle('agentPolicy', [3], (pr, repository, policy) => service.agentPolicy(id(pr), boolean(repository), policy as AgentPolicy | null));
+  handle('agentMap', [2], async (pr, remove) => {
+    const target = id(pr);
+    if (boolean(remove)) return service.agentMap(target, '');
+    const result = await dialog.showOpenDialog({ properties: ['openDirectory'], title: 'Choose the local repository folder' });
+    if (!result.canceled && result.filePaths[0]) service.agentMap(target, result.filePaths[0]);
+  });
+  handle('agentConfig', [2], (pr, config) => service.agentConfig(id(pr), config as AgentConfig));
+  handle('agentDeleteConfig', [2], (pr, config) => service.agentDeleteConfig(id(pr), id(config)));
+  handle('agentStart', [4], (pr, config, scope, drafts) => service.agentStart(id(pr), id(config), scope as AgentScope, boolean(drafts)));
+  handle('agentCancel', [2], (pr, run) => service.agentCancel(id(pr), id(run)));
+  handle('agentFinding', [4], (pr, run, finding, draft) => service.agentFinding(id(pr), id(run), id(finding), boolean(draft)));
   handle('status', [0], service.status);
   handle('disconnect', [1], value => service.disconnect(id(value)));
   handle('connect', [1], value => service.connect(token(value)));

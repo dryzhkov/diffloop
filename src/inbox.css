@@ -28,6 +28,7 @@ input.option { min-width: auto; }
 .patch-row code { white-space: pre; padding-inline: .6rem; line-height: 26px; }
 .patch-row button { font: inherit; font-size: .85rem; padding-block: 0; }
 .patch-row button[aria-pressed=true] { background: Highlight; color: HighlightText; }
+.line-gutter { display: grid; grid-template-columns: minmax(0, 1fr) 1.4rem; }
 .review select { max-width: 100%; }
 
 .pull-activity { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; margin-block: .75rem; }

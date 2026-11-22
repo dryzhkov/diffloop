@@ -17,7 +17,7 @@ try {
   const { openStore } = await import(join(directory, 'store.mjs'));
   const { workspace } = await import(join(directory, 'workspace.mjs'));
   const fresh = openStore(':memory:');
-  assert.equal(fresh.prepare('PRAGMA user_version').get().user_version, 4);
+  assert.equal(fresh.prepare('PRAGMA user_version').get().user_version, 5);
   fresh.close();
   db = new DatabaseSync(database);
   db.exec(`
@@ -32,7 +32,7 @@ try {
   `);
   db.close();
   db = openStore(database);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 4);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5);
   assert.equal(db.prepare("SELECT login FROM connections WHERE id = 'legacy-id'").get().login, 'legacy');
   assert.equal(db.prepare("SELECT hex(ciphertext) AS value FROM credentials WHERE ref = 'legacy-ref'").get().value, '6C6567616379');
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
