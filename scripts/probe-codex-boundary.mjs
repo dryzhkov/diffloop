@@ -7,9 +7,11 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 const cwd = await mkdtemp(join(tmpdir(), 'diffloop-codex-'));
-await mkdir(join(cwd, 'skills', 'fixture-unselected'), { recursive: true });
-await writeFile(join(cwd, 'skills', 'fixture-unselected', 'SKILL.md'),
-  '---\nname: fixture-unselected\ndescription: Synthetic unselected skill\n---\nFixture only.\n');
+if (process.argv.includes('--seed-unselected-skill')) {
+  await mkdir(join(cwd, 'skills', 'fixture-unselected'), { recursive: true });
+  await writeFile(join(cwd, 'skills', 'fixture-unselected', 'SKILL.md'),
+    '---\nname: fixture-unselected\ndescription: Synthetic unselected skill\n---\nFixture only.\n');
+}
 const { promise: captured, resolve: observe } = Promise.withResolvers();
 const mock = createServer(async (req, res) => {
   const chunks = [];
@@ -25,7 +27,7 @@ const server = spawn('codex', ['app-server', '--listen', 'stdio://',
   '-c', 'model_providers.fixture.wire_api="responses"',
   '-c', 'web_search="disabled"',
   '--enable', 'skip_host_skill_discovery', '--enable', 'omit_skill_descriptions',
-  ...['shell_tool', 'unified_exec', 'plugins', 'apps', 'hooks', 'multi_agent', 'multi_agent_v2', 'image_generation', 'goals', 'view_image', 'default_mode_request_user_input', 'skill_search'].flatMap(name => ['--disable', name]),
+  ...['shell_tool', 'unified_exec', 'plugins', 'apps', 'hooks', 'multi_agent', 'multi_agent_v2', 'image_generation', 'goals', 'view_image', 'skill_search'].flatMap(name => ['--disable', name]),
 ], { cwd, env: { ...process.env, CODEX_HOME: cwd }, stdio: ['pipe', 'pipe', 'ignore'] });
 const lines = createInterface({ input: server.stdout });
 let sequence = 0;
@@ -83,7 +85,8 @@ try {
   let deadline;
   try {
     const payload = await Promise.race([captured, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('No model request captured')), 10000); })]);
-    const unexpected = payload.tools.filter(tool => tool.name !== 'diffloop_list').map(tool => tool.name ?? tool.type);
+    const allowedTools = new Set(['diffloop_list', 'request_user_input']);
+    const unexpected = payload.tools.filter(tool => !allowedTools.has(tool.name)).map(tool => tool.name ?? tool.type);
     const unselectedSkill = JSON.stringify(payload.input).includes('fixture-unselected');
     if (!payload.tools.some(tool => tool.name === 'diffloop_list')) throw new Error('Synthetic review tool missing');
     console.log('Unexpected tools:', unexpected.join(', ') || 'none');

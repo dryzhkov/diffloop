@@ -48,16 +48,16 @@ export function registerWorkspace(page: string, service: ReturnType<typeof works
     if (typeof value !== 'boolean') throw new Error('Invalid agent option');
     return value;
   }
-  handle('agentState', [1], pr => service.agentState(id(pr)));
-  handle('agentPolicy', [3], (pr, repository, policy) => service.agentPolicy(id(pr), boolean(repository), policy as AgentPolicy | null));
+  handle('agentState', [1, 2], (pr, byConnection = false) => service.agentState(id(pr), boolean(byConnection)));
+  handle('agentPolicy', [3, 4], (pr, repository, policy, byConnection = false) => service.agentPolicy(id(pr), boolean(repository), policy as AgentPolicy | null, boolean(byConnection)));
   handle('agentMap', [2], async (pr, remove) => {
     const target = id(pr);
     if (boolean(remove)) return service.agentMap(target, '');
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'], title: 'Choose the local repository folder' });
     if (!result.canceled && result.filePaths[0]) service.agentMap(target, result.filePaths[0]);
   });
-  handle('agentConfig', [2], (pr, config) => service.agentConfig(id(pr), config as AgentConfig));
-  handle('agentDeleteConfig', [2], (pr, config) => service.agentDeleteConfig(id(pr), id(config)));
+  handle('agentConfig', [2, 3], (pr, config, byConnection = false) => service.agentConfig(id(pr), config as AgentConfig, boolean(byConnection)));
+  handle('agentDeleteConfig', [2, 3], (pr, config, byConnection = false) => service.agentDeleteConfig(id(pr), id(config), boolean(byConnection)));
   handle('agentStart', [4], (pr, config, scope, drafts) => service.agentStart(id(pr), id(config), scope as AgentScope, boolean(drafts)));
   handle('agentCancel', [2], (pr, run) => service.agentCancel(id(pr), id(run)));
   handle('agentFinding', [4], (pr, run, finding, draft) => service.agentFinding(id(pr), id(run), id(finding), boolean(draft)));

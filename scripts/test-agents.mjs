@@ -20,6 +20,8 @@ try {
   db.exec(`
     INSERT INTO credentials VALUES ('vault', X'00');
     INSERT INTO connections (id, account_id, login, credential_ref) VALUES ('c', 'account', 'fixture', 'vault');
+    INSERT INTO credentials VALUES ('other-vault', X'00');
+    INSERT INTO connections (id, account_id, login, credential_ref) VALUES ('empty', 'other-account', 'other', 'other-vault');
     INSERT INTO pull_requests VALUES ('p', 'c', 'remote', 'synthetic/project', 1, 'open');
     INSERT INTO pull_requests VALUES ('q', 'c', 'other', 'synthetic/other', 2, 'open');
   `);
@@ -40,9 +42,18 @@ try {
   const review = id => id === 'p' ? snapshot : { ...snapshot, metadata: cached({ ...snapshot.metadata.data, repositoryId: 'repo-2' }) };
   const noRead = async () => assert.fail('Unexpected cache read');
   const production = agents(db, review, noRead);
-  assert.match(production.agentState('p').blocked, /Codex review is disabled/);
-  assert.throws(() => production.agentStart('p', '', { kind: 'pr' }, false), /disabled/);
+  assert.match(production.agentState('p').blocked, /Live Codex review is unavailable/);
+  assert.throws(() => production.agentStart('p', '', { kind: 'pr' }, false), /unavailable/);
   assert.deepEqual(production.agentState('p').runs, []);
+  const unused = production.agentConfig('empty', {
+    id: '', name: 'Before Pull', model: 'fixture', context: ['diff'], allowDrafts: false,
+    review: { kind: 'instructions', text: 'Review correctness.' },
+  }, true);
+  assert.deepEqual(production.agentState('empty', true).configs, [unused]);
+  assert.deepEqual(production.agentState('c', true).configs, []);
+  assert.throws(() => production.agentConfig('c', unused, true), /Unknown review configuration/);
+  production.agentDeleteConfig('empty', unused.id, true);
+  assert.deepEqual(production.agentState('empty', true).configs, []);
 
   const waitForRun = async (service, id, status) => {
     for (let n = 0; n < 100; n++) {

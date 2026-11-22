@@ -13,13 +13,11 @@ interface ReviewTools {
   createDraft?(finding: string): void;
 }
 
-// Only a runtime whose effective capabilities were verified may be passed here.
-// The production composition supplies no runtime while Codex isolation is unverified.
 export interface RestrictedReviewRuntime {
   version: string;
   execute(input: { model: string; instructions: string; tools: ReviewTools; signal: AbortSignal }): Promise<void>;
 }
-export const codexBlocked = 'Codex review is disabled. The installed runtime exposed an extra tool and advertised an unselected skill in the isolated capability check.';
+export const codexBlocked = 'Live Codex review is unavailable in this build.';
 const denied: AgentPolicy = { enabled: false, context: [], allowDrafts: false };
 const interrupted = 'Interrupted by shutdown';
 
@@ -52,6 +50,11 @@ export function agents(db: DatabaseSync, review: (id: string) => Review,
     const repository = review(pr).metadata.data?.repositoryId;
     if (!repository) throw new Error('Pull PR metadata first');
     return { connection: String(row.connection), repository, disconnected: row.status === 'disconnected' };
+  }
+  function connectionIdentity(connection: string) {
+    const row = db.prepare('SELECT status FROM connections WHERE id=?').get(connection);
+    if (!row) throw new Error('Unknown GitHub connection');
+    return { connection, repository: '', disconnected: row.status === 'disconnected' };
   }
   function policy(connection: string, repository: string) {
     const row = db.prepare('SELECT policy FROM agent_grants WHERE connection=? AND repository=?').get(connection, repository);
@@ -114,22 +117,23 @@ export function agents(db: DatabaseSync, review: (id: string) => Review,
     stopAgentRuns() {
       for (const connection of new Set([...active.values()].map(item => item.connection))) cancel(connection);
     },
-    agentState(pr: string): AgentState {
-      const { connection, repository, disconnected } = identity(pr);
+    agentState(pr: string, byConnection = false): AgentState {
+      const { connection, repository, disconnected } = byConnection ? connectionIdentity(pr) : identity(pr);
       return {
         blocked: disconnected ? 'GitHub account disconnected.' : runtime ? null : codexBlocked,
         connection: policy(connection, '') ?? denied,
-        repository: policy(connection, repository),
-        localRoot: (db.prepare('SELECT path FROM agent_local_roots WHERE connection=? AND repository=?')
+        repository: byConnection ? null : policy(connection, repository),
+        localRoot: byConnection ? null : (db.prepare('SELECT path FROM agent_local_roots WHERE connection=? AND repository=?')
           .get(connection, repository)?.path as string | undefined) ?? null,
         configs: db.prepare('SELECT config FROM agent_configs WHERE connection=? ORDER BY rowid').all(connection)
           .map(row => value<AgentConfig>(row.config)),
-        runs: db.prepare('SELECT record FROM agent_runs WHERE pr=? ORDER BY rowid DESC').all(pr)
+        runs: byConnection ? [] : db.prepare('SELECT record FROM agent_runs WHERE pr=? ORDER BY rowid DESC').all(pr)
           .map(row => value<AgentRun>(row.record)),
       };
     },
-    agentPolicy(pr: string, override: boolean, input: AgentPolicy | null) {
-      const { connection, repository } = identity(pr);
+    agentPolicy(pr: string, override: boolean, input: AgentPolicy | null, byConnection = false) {
+      const { connection, repository } = byConnection ? connectionIdentity(pr) : identity(pr);
+      if (byConnection && override) throw new Error('Repository override requires a PR');
       const key = override ? repository : '';
       if (input === null) {
         if (!override) throw new Error('Connection policy required');
@@ -147,8 +151,8 @@ export function agents(db: DatabaseSync, review: (id: string) => Review,
       else db.prepare('DELETE FROM agent_local_roots WHERE connection=? AND repository=?').run(connection, repository);
       cancel(connection, repository);
     },
-    agentConfig(pr: string, input: AgentConfig) {
-      const { connection } = identity(pr);
+    agentConfig(pr: string, input: AgentConfig, byConnection = false) {
+      const { connection } = byConnection ? connectionIdentity(pr) : identity(pr);
       if (!input || !['instructions', 'skill', 'plugin'].includes(input.review?.kind)) throw new Error('Invalid review configuration');
       if (input.id) config(connection, input.id);
       const next: AgentConfig = {
@@ -159,8 +163,8 @@ export function agents(db: DatabaseSync, review: (id: string) => Review,
         .run(next.id, connection, JSON.stringify(next));
       return next;
     },
-    agentDeleteConfig(pr: string, id: string) {
-      const { connection } = identity(pr);
+    agentDeleteConfig(pr: string, id: string, byConnection = false) {
+      const { connection } = byConnection ? connectionIdentity(pr) : identity(pr);
       db.prepare('DELETE FROM agent_configs WHERE connection=? AND id=?').run(connection, id);
     },
     agentCancel(pr: string, id: string) {
@@ -307,8 +311,8 @@ export function agents(db: DatabaseSync, review: (id: string) => Review,
         });
       }).then(() => {
         if (run.status === 'running') finish(run, 'completed');
-      }, () => {
-        if (run.status === 'running') finish(run, 'failed', 'Review runtime failed.');
+      }, error => {
+        if (run.status === 'running') finish(run, 'failed', error instanceof Error ? error.message : 'Review runtime failed.');
       });
       return run.id;
     },

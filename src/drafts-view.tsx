@@ -1,3 +1,4 @@
+import { Button, TextArea } from '@radix-ui/themes';
 import { useEffect, useState } from 'react';
 import type { Draft, DraftTarget } from './api';
 
@@ -23,19 +24,19 @@ function DraftRow({ pr, d, head, run, onPublished }: {onPublished:()=>Promise<vo
   return <article>
     <strong>{label(d.target)}</strong> · {d.status}{d.agentRunId && ' · Agent finding'}
     {d.head !== head && d.status !== 'pushed' && <p>Revision changed. Recheck against {d.head}.</p>}
-    {d.target.kind !== 'thread' && <textarea aria-label="Draft body" value={body} readOnly={d.status === 'pushed'}
+    {d.target.kind !== 'thread' && <TextArea aria-label="Draft body" value={body} readOnly={d.status === 'pushed'}
       onChange={e => setBody(e.target.value)} />}
     <div className="toolbar">
-      {d.status !== 'pushed' && <button disabled={body === d.body} onClick={() => run(() => api.editDraft(d.id,body,d.included,false))}>Save edits</button>}
+      {d.status !== 'pushed' && <Button disabled={body === d.body} onClick={() => run(() => api.editDraft(d.id,body,d.included,false))}>Save edits</Button>}
       {ready && !separate && <label><input type="checkbox" className="option" checked={d.included}
         onChange={e => run(() => api.editDraft(d.id,body,e.target.checked,false))}/> Include in Push</label>}
-      {ready && separate && <button disabled={body !== d.body} onClick={() => run(async () => {await api.pushDrafts(pr,[d.id]); await onPublished();})}>{label(d.target)} on GitHub</button>}
-      {ready && (d.target.kind === 'inline' || d.target.kind === 'reply') && <button onClick={() => run(() => api.editDraft(d.id,body,d.included,true))}>Move to general comment</button>}
-      {ready && <button onClick={() => run(() => api.discardDraft(d.id))}>Discard draft</button>}
-      {d.url && <button onClick={() => run(() => api.openDraftUrl(d.id))}>View on GitHub</button>}
+      {ready && separate && <Button disabled={body !== d.body} onClick={() => run(async () => {await api.pushDrafts(pr,[d.id]); await onPublished();})}>{label(d.target)} on GitHub</Button>}
+      {ready && (d.target.kind === 'inline' || d.target.kind === 'reply') && <Button onClick={() => run(() => api.editDraft(d.id,body,d.included,true))}>Move to general comment</Button>}
+      {ready && <Button onClick={() => run(() => api.discardDraft(d.id))}>Discard draft</Button>}
+      {d.url && <Button onClick={() => run(() => api.openDraftUrl(d.id))}>View on GitHub</Button>}
       {d.status === 'uncertain' && <>
-        <button onClick={() => run(async () => {await api.checkDraft(d.id); await onPublished();})}>Check publication</button>
-        <button onClick={() => run(() => api.resolveDraft(d.id))}>I verified this was not published</button>
+        <Button onClick={() => run(async () => {await api.checkDraft(d.id); await onPublished();})}>Check publication</Button>
+        <Button onClick={() => run(() => api.resolveDraft(d.id))}>I verified this was not published</Button>
       </>}
     </div>
     {d.detail && <p>{d.detail}</p>}
@@ -63,10 +64,10 @@ export function DraftsView({pr,head,target,setTarget,onPublished,agentDraftRevis
       {['inline','reply','thread'].includes(target.kind) && <option value={target.kind}>{label(target)}</option>}
       <option value="COMMENT">Review body</option><option value="APPROVE">Approval</option><option value="REQUEST_CHANGES">Request changes</option>
     </select></label>
-    {target.kind !== 'thread' && <textarea aria-label="New draft text" value={body} onChange={e=>setBody(e.target.value)} />}
-    <button disabled={!!pending} onClick={()=>run(async()=>{await api.addDraft(pr,target,head,body);setBody('');setTarget({kind:'pr'});})}>Save local draft</button>
+    {target.kind !== 'thread' && <TextArea aria-label="New draft text" value={body} onChange={e=>setBody(e.target.value)} />}
+    <Button disabled={!!pending} onClick={()=>run(async()=>{await api.addDraft(pr,target,head,body);setBody('');setTarget({kind:'pr'});})}>Save local draft</Button>
     {items.map(d=><DraftRow onPublished={onPublished} pr={pr} key={d.id} d={d} head={head} run={run}/>)}
-    <button disabled={!!pending || !selected.length} onClick={()=>run(()=>api.pushDrafts(pr,selected.map(d=>d.id)))}>Push selected comments ({selected.length})</button>
+    <Button disabled={!!pending || !selected.length} onClick={()=>run(()=>api.pushDrafts(pr,selected.map(d=>d.id)))}>Push selected comments ({selected.length})</Button>
     {pending>0 && <p role="status">Working…</p>}{error && <p role="alert">{error}</p>}
   </section>;
 }

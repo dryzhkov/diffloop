@@ -321,8 +321,8 @@ The interfaces above describe domain records, not the full database schema. Pers
 4. **Implemented.** Build virtualized diffs, selections, threads, and comment anchors; show missing or incomplete context.
 5. **Implemented.** Implement inbox reasons, activity baselines, Mark handled, and Pull-driven snooze wake-ups.
 6. **Implemented.** Add local drafts, per-comment Push/retry, simple conflict handling, and separate review/thread actions. Live publishing validation remains part of stage 1.
-7. **Partially implemented.** Added per-GitHub-connection Codex grants, stricter repository overrides, local folder mappings, and restricted cached-GitHub context and local-draft tools. Local checkout access and Codex execution remain disabled. The [synthetic capability probe](docs/stage-one.md#codex-capability-probe) observed an unselected skill and an extra built-in tool.
-8. **Implemented with a synthetic runtime.** Added Codex configurations, PR, selection, and thread scopes, cancellation, persisted findings and run history, and local drafts with run provenance. Live runs and registered extension resolution are gated on runtime isolation.
+7. **Partially implemented.** Diffloop runs Codex in a temporary profile with restricted review tools. Connection and repository grants apply to cached GitHub context and local drafts. Local folder mappings exist, with checkout access still open.
+8. **Implemented for direct Codex instructions.** Added Codex configurations, PR, selection, and thread scopes, cancellation, persisted findings and run history, and local drafts with run provenance. Registered skill and plugin resolution remains open.
 9. **Partially covered.** Fixtures exercise offline/restart workflows, partial Push failures, and uncertain-outcome recovery. Agent fixtures cover scope isolation, revocation during a read, draft consent, and the absence of publishing tools. Repeat the capability checks with a live adapter before enabling it.
 10. **Pending.** Sign, notarize, and verify macOS releases; publish a Homebrew cask. Assess Windows separately.
 

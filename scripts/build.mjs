@@ -7,6 +7,6 @@ await build({
 });
 await build({
   entryPoints: ['src/inbox.tsx'], outfile: 'dist/inbox.js',
-  platform: 'browser', bundle: true, define: { 'process.env.NODE_ENV': '"production"' },
+  platform: 'browser', bundle: true, minify: true, define: { 'process.env.NODE_ENV': '"production"' },
 });
 await copyFile('src/index.html', 'dist/index.html');

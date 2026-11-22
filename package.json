@@ -9,6 +9,8 @@
     "start": "npm run build && electron ."
   },
   "dependencies": {
+    "@pierre/diffs": "^1.6.4",
+    "@radix-ui/themes": "^3.3.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

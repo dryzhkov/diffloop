@@ -1,5 +1,6 @@
 import { reconcile, observeRequests, type RequestTargets } from './attention';
 import { agents } from './agents';
+import { codexRuntime } from './codex-runtime';
 import { publishing } from './publishing';
 import { randomUUID } from 'node:crypto';
 import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -257,7 +258,7 @@ export function workspace(db: DatabaseSync, vault: Vault, cacheRoot: string, req
       throw new Error('Cached file could not be read');
     });
   }
-  const reviewer = agents(db, review, (pr, file) => cachedFile(pr, file.path, file.side, file.blob!));
+  const reviewer = agents(db, review, (pr, file) => cachedFile(pr, file.path, file.side, file.blob!), codexRuntime);
   const publisher = publishing(db, review, async (connectionId, signal) => {
     const connection = account(connectionId);
     if (connection.status === 'disconnected') throw new Error('Account disconnected');

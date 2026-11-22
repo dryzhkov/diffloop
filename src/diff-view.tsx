@@ -1,74 +1,116 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
+import { Button, Callout, Select, Text, TextArea } from '@radix-ui/themes';
+import { getSingularPatch, type DiffLineAnnotation, type SelectedLineRange } from '@pierre/diffs';
+import { FileDiff, Virtualizer } from '@pierre/diffs/react';
 import type { CodeAnchor, Diff, DiffFile, Threads } from './api';
-import { anchorFor, parseLines, type Side } from './diff-lines';
+import { anchorFor, parseLines } from './diff-lines';
 
-const rowHeight = 26;
-const visibleRows = 14;
-type Selection = { side: Side; first: number; last: number };
+type Thread = Threads['threads'][number];
+type Annotation = { thread: Thread } | { draft: CodeAnchor };
 
-export function DiffView({ diff, file, threads, onDraft, onReview }: {
-  onReview:(anchor:CodeAnchor)=>void; onDraft:(anchor:CodeAnchor)=>void; diff: Diff; file: DiffFile; threads: Threads['threads'];
+export function DiffView({ diff, file, threads, onDraft, onReview, renderThread, canDraft }: {
+  onDraft: (anchor: CodeAnchor, body: string) => Promise<void>;
+  onReview: (anchor: CodeAnchor) => void;
+  renderThread: (thread: Thread) => ReactNode;
+  canDraft: boolean;
+  diff: Diff;
+  file: DiffFile;
+  threads: Thread[];
 }) {
   const rows = useMemo(() => parseLines(file.patch ?? ''), [file.patch]);
-  const [scroll, setScroll] = useState(0);
-  const [selection, select] = useState<Selection | null>(null);
-  const start = Math.max(0, Math.floor(scroll / rowHeight) - 4);
-  const anchor = selection && anchorFor(diff, file, selection.side, rows[selection.first], rows[selection.last]);
-  const locations = useMemo(() => {
-    const map = new Map<string, typeof threads>();
-    for (const thread of threads) {
-      if (thread.path !== file.path || thread.isOutdated || !thread.line || !thread.diffSide) continue;
-      const key = thread.diffSide + thread.line;
-      const items = map.get(key) ?? [];
-      items.push(thread);
-      map.set(key, items);
+  const parsed = useMemo(() => {
+    if (!file.patch) return null;
+    const oldPath = file.status === 'added' ? '/dev/null' : 'a/file';
+    const newPath = file.status === 'removed' ? '/dev/null' : 'b/file';
+    try {
+      const patch = getSingularPatch(`diff --git a/file b/file\n--- ${oldPath}\n+++ ${newPath}\n${file.patch}\n`);
+      return { ...patch, name: file.path, prevName: file.previousPath ?? undefined };
+    } catch {
+      return null;
     }
-    return map;
-  }, [threads, file.path]);
-  if (!file.patch) return <p>{file.patchError ?? 'Patch unavailable offline.'}</p>;
-  return <>
-    <p>{diff.diffBaseSha ? 'Use + next to a line number to draft a comment. To comment on a range, select a line number and Shift-select another in the same hunk.' :
-      'Line selection unavailable because the cached patch has no verified merge base.'}</p>
-    <div className="patch" aria-label={`Diff for ${file.path}`} tabIndex={0}
-      style={{ maxHeight: visibleRows * rowHeight }} onScroll={event => setScroll(event.currentTarget.scrollTop)}>
-      <div style={{ height: rows.length * rowHeight }}>
-        <div style={{ paddingTop: start * rowHeight }}>
-          {rows.slice(start, start + visibleRows + 9).map((row, offset) => {
-            const index = start + offset;
-            return <div key={index} className="patch-row" style={{ height: rowHeight }}>
-              {(['base', 'head'] as const).map(side => {
-                const number = row[side];
-                const active = anchor && anchor.side === side && number !== undefined &&
-                  number >= anchor.startLine && number <= anchor.endLine;
-                const lineAnchor = anchorFor(diff, file, side, row, row);
-                return number === undefined ? <span key={side} /> : <span key={side} className="line-gutter">
-                  <button aria-label={`${side} line ${number}`} aria-pressed={!!active}
-                    disabled={!diff.diffBaseSha} onClick={event => {
-                      const extend = event.shiftKey && selection?.side === side &&
-                        rows[selection.first].hunk === row.hunk;
-                      select({ side, first: extend ? selection.first : index, last: index });
-                    }}>{number}</button>
-                  {lineAnchor && <button aria-label={`Comment on ${side} line ${number}`}
-                    title={`Comment on ${side} line ${number}`} onClick={() => onDraft(lineAnchor)}>+</button>}
-                </span>;
-              })}
-              <code>{row.text}</code>
-              {(['LEFT', 'RIGHT'] as const).flatMap(side =>
-                (locations.get(side + row[side === 'LEFT' ? 'base' : 'head']) ?? []).map(thread =>
-                  <button key={thread.id} onClick={() => {
-                    const target = document.getElementById('thread-' + thread.id) as HTMLDetailsElement | null;
-                    if (target) {
-                      target.open = true;
-                      target.querySelector('summary')?.focus();
-                      target.scrollIntoView({ block: 'center' });
-                    }
-                  }}>{thread.isResolved ? 'Resolved thread' : 'Open thread'}</button>))}
-            </div>;
-          })}
-        </div>
+  }, [file]);
+  const [mode, setMode] = useState<'split' | 'unified'>('split');
+  const [selection, setSelection] = useState<SelectedLineRange | null>(null);
+  const [draft, setDraft] = useState<CodeAnchor | null>(null);
+  const [body, setBody] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  function toAnchor(range: SelectedLineRange | null) {
+    if (!range?.side || (range.endSide && range.endSide !== range.side)) return null;
+    const side = range.side === 'deletions' ? 'base' : 'head';
+    const first = rows.find(row => row[side] === range.start);
+    const last = rows.find(row => row[side] === range.end);
+    return first && last ? anchorFor(diff, file, side, first, last) : null;
+  }
+  function compose(anchor: CodeAnchor | null) {
+    if (!anchor || saving || (draft && body.trim())) return;
+    setError('');
+    setBody('');
+    setDraft(anchor);
+  }
+  const annotations: DiffLineAnnotation<Annotation>[] = threads.flatMap(thread => {
+    if (thread.path !== file.path || thread.isOutdated || !thread.line || !thread.diffSide) return [];
+    const left = thread.diffSide === 'LEFT';
+    if (!rows.some(row => row[left ? 'base' : 'head'] === thread.line)) return [];
+    return [{ lineNumber: thread.line, side: left ? 'deletions' : 'additions', metadata: { thread } }];
+  });
+  if (draft) annotations.push({
+    lineNumber: draft.endLine,
+    side: draft.side === 'base' ? 'deletions' : 'additions',
+    metadata: { draft },
+  });
+  const anchor = toAnchor(selection);
+  if (!parsed) return <Callout.Root color="amber"><Callout.Text>
+    {file.patchError ?? (file.patch ? 'This patch could not be rendered.' : 'Patch unavailable offline.')}
+  </Callout.Text></Callout.Root>;
+
+  return <div className="diff-view">
+    <div className="row-between diff-toolbar">
+      <div className="toolbar">
+        <Text size="2" color="gray">{file.previousPath ? `${file.previousPath} → ${file.path}` : file.path}</Text>
+        {anchor && <Button size="1" variant="soft" disabled={!canDraft || saving || !!(draft && body.trim())}
+          onClick={() => compose(anchor)}>Comment on selection</Button>}
+        {anchor && <Button size="1" variant="soft" onClick={() => onReview(anchor)}>Review selection</Button>}
       </div>
+      <Select.Root size="1" value={mode} onValueChange={value => setMode(value === 'unified' ? 'unified' : 'split')}>
+        <Select.Trigger aria-label="Diff layout" />
+        <Select.Content><Select.Item value="split">Split</Select.Item><Select.Item value="unified">Unified</Select.Item></Select.Content>
+      </Select.Root>
     </div>
-    {anchor && <p aria-live="polite" className="revision">{anchor.path} · {anchor.side} · lines {anchor.startLine}–{anchor.endLine}
-      <br />{anchor.commitSha} <button onClick={() => select(null)}>Clear selection</button> <button onClick={() => onDraft(anchor)}>Draft inline comment</button> <button onClick={() => onReview(anchor)}>Review selection with Codex</button></p>}
-  </>;
+    <Virtualizer className="diff-scroll">
+      <FileDiff fileDiff={parsed} lineAnnotations={annotations} selectedLines={selection} options={{
+        diffStyle: mode, disableFileHeader: true, preferredHighlighter: 'shiki-js',
+        enableLineSelection: !!diff.diffBaseSha,
+        enableGutterUtility: canDraft && !saving && !(draft && body.trim()),
+        onGutterUtilityClick: range => compose(toAnchor(range)),
+        onLineSelected: setSelection,
+      }} renderAnnotation={({ metadata }) => metadata && ('thread' in metadata ?
+        <div className="line-annotation">{renderThread(metadata.thread)}</div> :
+        <form className="line-annotation stack" onSubmit={async event => {
+          event.preventDefault();
+          if (saving || !body.trim()) return;
+          setSaving(true);
+          setError('');
+          try {
+            await onDraft(metadata.draft, body);
+            setBody('');
+            setDraft(null);
+          } catch (failure) {
+            setError(failure instanceof Error ? failure.message : String(failure));
+          } finally {
+            setSaving(false);
+          }
+        }}>
+          <Text size="2" weight="medium">Comment on {metadata.draft.side} {metadata.draft.startLine === metadata.draft.endLine ?
+            `line ${metadata.draft.endLine}` : `lines ${metadata.draft.startLine}–${metadata.draft.endLine}`}</Text>
+          <TextArea aria-label="Inline draft text" value={body} onChange={event => setBody(event.target.value)} rows={3} />
+          {error && <Text role="alert" color="red">{error}</Text>}
+          <div className="toolbar">
+            <Button size="1" type="submit" disabled={!canDraft || saving || !body.trim()}>Save local draft</Button>
+            <Button size="1" type="button" variant="soft" disabled={saving} onClick={() => { setDraft(null); setBody(''); }}>Cancel</Button>
+          </div>
+        </form>)} />
+    </Virtualizer>
+  </div>;
 }

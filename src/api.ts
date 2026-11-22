@@ -94,11 +94,11 @@ export interface DeviceCode { userCode: string; expiresAt: number }
 
 export interface WorkspaceApi {
   status(): Promise<WorkspaceStatus>;
-  agentState(pr: string): Promise<AgentState>;
-  agentPolicy(pr: string, repository: boolean, policy: AgentPolicy | null): Promise<void>;
+  agentState(pr: string, byConnection?: boolean): Promise<AgentState>;
+  agentPolicy(pr: string, repository: boolean, policy: AgentPolicy | null, byConnection?: boolean): Promise<void>;
   agentMap(pr: string, remove: boolean): Promise<void>;
-  agentConfig(pr: string, config: AgentConfig): Promise<AgentConfig>;
-  agentDeleteConfig(pr: string, config: string): Promise<void>;
+  agentConfig(pr: string, config: AgentConfig, byConnection?: boolean): Promise<AgentConfig>;
+  agentDeleteConfig(pr: string, config: string, byConnection?: boolean): Promise<void>;
   agentStart(pr: string, config: string, scope: AgentScope, allowDrafts: boolean): Promise<string>;
   agentCancel(pr: string, run: string): Promise<void>;
   agentFinding(pr: string, run: string, finding: string, draft: boolean): Promise<void>;
