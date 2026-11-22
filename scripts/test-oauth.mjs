@@ -27,6 +27,10 @@ try {
 
   const oauth = githubOAuth(clientId, async token => { tokens.push(token); }, request, sleep, () => time);
   assert.equal(githubOAuth(undefined, async () => {}).configured, false);
+  const emptyClient = githubOAuth('', async () => {}, request);
+  assert.equal(emptyClient.configured, false);
+  await assert.rejects(emptyClient.start(false), /not configured/);
+  assert.equal(requests.length, 0);
   responses = [challenge, { error: 'authorization_pending' }, { error: 'slow_down', interval: 10 },
     { access_token: 'fixture_token', token_type: 'bearer' }];
   assert.deepEqual(await oauth.start(false), { userCode: 'ABCD-1234', expiresAt: 900000 });
